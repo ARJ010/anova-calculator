@@ -166,5 +166,46 @@ class TestAPIRoutes(unittest.TestCase):
         self.assertIn('posthoc_results', data)
         self.assertIn('interaction_plot_data', data)
 
+    def test_export_excel_endpoint(self):
+        # 1. Get stats from one-way endpoint
+        oneway_resp = self.client.get('/api/one-way?crop=Onion&variable=Root%20Length&day=Day%207&factor=Concentration&biochar_filter=Acrostichum%20aureum')
+        self.assertEqual(oneway_resp.status_code, 200)
+        oneway_data = oneway_resp.get_json()
+
+        # 2. Build payload with a minimal mock 1x1 pixel PNG in base64
+        mock_png_base64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        
+        payload = {
+            "crop": "Onion",
+            "variable": "Root Length",
+            "day": "Day 7",
+            "factor": "Concentration",
+            "biochar": "Acrostichum aureum",
+            "summary_stats": oneway_data.get("summary_stats", []),
+            "anova_table": oneway_data.get("anova_table", {}),
+            "levene_result": oneway_data.get("levene_result", {}),
+            "shapiro_results": oneway_data.get("shapiro_results", []),
+            "tukey_results": oneway_data.get("tukey_results", []),
+            "inference_summary": "Statistically Significant",
+            "chart_image": mock_png_base64
+        }
+
+        # 3. Call export endpoint
+        response = self.client.post('/api/export-excel', json=payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        
+        # Verify it's a valid zip file structure (which Excel files are)
+        import zipfile
+        from io import BytesIO
+        try:
+            zip_file = zipfile.ZipFile(BytesIO(response.data))
+            # Verify basic Excel internal files are present
+            self.assertIn('[Content_Types].xml', zip_file.namelist())
+            self.assertIn('xl/workbook.xml', zip_file.namelist())
+        except Exception as zip_err:
+            self.fail(f"Exported Excel file is not a valid zip archive: {str(zip_err)}")
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -1,8 +1,12 @@
 import os
+import io
+import base64
 from pathlib import Path
 import pandas as pd
 import openpyxl
-from flask import Flask, jsonify, render_template, request
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.drawing.image import Image
+from flask import Flask, jsonify, render_template, request, send_file
 
 app = Flask(__name__)
 
@@ -699,6 +703,343 @@ def api_two_way():
     
     return jsonify(response)
 
+@app.route("/api/export-excel", methods=["POST"])
+def export_excel():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "No data provided"}), 400
+
+        crop = data.get("crop", "N/A")
+        variable = data.get("variable", "N/A")
+        day = data.get("day", "N/A")
+        factor = data.get("factor", "N/A")
+        biochar = data.get("biochar", "N/A")
+
+        summary_stats = data.get("summary_stats", [])
+        anova_table = data.get("anova_table", {})
+        levene_result = data.get("levene_result", {})
+        shapiro_results = data.get("shapiro_results", [])
+        tukey_results = data.get("tukey_results", [])
+        inference_summary = data.get("inference_summary", "N/A")
+        chart_image = data.get("chart_image", "")
+
+        # Decode base64 chart image if present
+        img = None
+        if chart_image and "," in chart_image:
+            try:
+                header, encoded = chart_image.split(",", 1)
+                decoded = base64.b64decode(encoded)
+                img = Image(io.BytesIO(decoded))
+            except Exception as img_err:
+                print(f"Error decoding chart image: {str(img_err)}")
+
+        # Create Workbook
+        wb = openpyxl.Workbook()
+
+        # Styles
+        font_title = Font(name="Arial", size=14, bold=True, color="1B5E20") # Academic forest green
+        font_header = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+        font_bold = Font(name="Arial", size=11, bold=True)
+        font_regular = Font(name="Arial", size=10)
+
+        fill_header = PatternFill(start_color="343A40", end_color="343A40", fill_type="solid") # Dark gray header
+        fill_light = PatternFill(start_color="F8F9FA", end_color="F8F9FA", fill_type="solid") # subtle light background
+        fill_sig = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid") # soft pink/red for significance
+
+        thin_side = Side(border_style="thin", color="D3D3D3")
+        border_all = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+
+        align_center = Alignment(horizontal="center", vertical="center")
+        align_left = Alignment(horizontal="left", vertical="center")
+        align_right = Alignment(horizontal="right", vertical="center")
+
+        # Sheet 1: Summary
+        ws1 = wb.active
+        ws1.title = "Summary"
+        ws1.views.sheetView[0].showGridLines = True
+
+        ws1.cell(row=1, column=1, value="One-Way ANOVA Research Report Summary").font = font_title
+        ws1.row_dimensions[1].height = 25
+
+        ws1.cell(row=3, column=1, value="Field").font = font_header
+        ws1.cell(row=3, column=1).fill = fill_header
+        ws1.cell(row=3, column=1).alignment = align_center
+
+        ws1.cell(row=3, column=2, value="Value").font = font_header
+        ws1.cell(row=3, column=2).fill = fill_header
+        ws1.cell(row=3, column=2).alignment = align_center
+
+        between = anova_table.get("Between", {})
+        f_stat = between.get("F", "N/A")
+        p_val = between.get("p_value", "N/A")
+        significant = anova_table.get("Significant", False)
+
+        if isinstance(f_stat, (int, float)):
+            f_stat = round(f_stat, 4)
+        if isinstance(p_val, (int, float)):
+            p_val = round(p_val, 4)
+
+        summary_data = [
+            ("Crop", crop),
+            ("Variable", variable),
+            ("Day", day),
+            ("Grouping Factor", factor),
+            ("Biochar Group", biochar),
+            ("F-statistic", f_stat),
+            ("p-value", p_val),
+            ("Significant (p < 0.05)", "Yes" if significant else "No"),
+        ]
+
+        for row_idx, (field, val) in enumerate(summary_data, 4):
+            c_f = ws1.cell(row=row_idx, column=1, value=field)
+            c_f.font = font_bold
+            c_f.border = border_all
+            c_f.fill = fill_light
+
+            c_v = ws1.cell(row=row_idx, column=2, value=val)
+            c_v.font = font_regular
+            c_v.border = border_all
+            c_v.alignment = align_left
+
+        ws1.cell(row=13, column=1, value="Inference Summary:").font = font_bold
+        c_inf = ws1.cell(row=14, column=1, value=inference_summary)
+        c_inf.font = font_regular
+        c_inf.alignment = Alignment(wrap_text=True, vertical="top")
+        ws1.merge_cells(start_row=14, start_column=1, end_row=16, end_column=5)
+
+        # Sheet 2: Descriptive Statistics
+        ws2 = wb.create_sheet(title="Descriptive Statistics")
+        ws2.views.sheetView[0].showGridLines = True
+        ws2.cell(row=1, column=1, value="Descriptive Statistics Summary").font = font_title
+
+        desc_headers = ["Group", "N", "Sum (\u03a3X)", "Mean", "Variance", "SD", "SE", "Sum Sq (\u03a3X\u00b2)"]
+        for col_num, header in enumerate(desc_headers, 1):
+            cell = ws2.cell(row=3, column=col_num, value=header)
+            cell.font = font_header
+            cell.fill = fill_header
+            cell.alignment = align_center
+
+        for row_idx, r_data in enumerate(summary_stats, 4):
+            ws2.cell(row=row_idx, column=1, value=r_data.get("Group")).font = font_bold
+            ws2.cell(row=row_idx, column=2, value=r_data.get("N")).alignment = align_center
+            ws2.cell(row=row_idx, column=3, value=r_data.get("Sum"))
+            ws2.cell(row=row_idx, column=4, value=r_data.get("Mean"))
+            ws2.cell(row=row_idx, column=5, value=r_data.get("Variance"))
+            ws2.cell(row=row_idx, column=6, value=r_data.get("SD"))
+            
+            # Retrieve or calculate SE
+            se_val = r_data.get("SE")
+            if se_val is None:
+                n_val = r_data.get("N", 0)
+                sd_val = r_data.get("SD", 0)
+                se_val = sd_val / (n_val ** 0.5) if n_val > 0 else 0
+            
+            ws2.cell(row=row_idx, column=7, value=round(float(se_val), 4))
+            ws2.cell(row=row_idx, column=8, value=r_data.get("SumSq"))
+
+            for col_num in range(1, 9):
+                cell = ws2.cell(row=row_idx, column=col_num)
+                cell.font = font_bold if col_num == 1 else font_regular
+                cell.border = border_all
+                if col_num > 1:
+                    cell.alignment = align_right if col_num != 2 else align_center
+
+        # Sheet 3: ANOVA Table
+        ws3 = wb.create_sheet(title="ANOVA Table")
+        ws3.views.sheetView[0].showGridLines = True
+        ws3.cell(row=1, column=1, value="One-Way ANOVA Table (F-Test)").font = font_title
+
+        anova_headers = ["Source of Variation", "SS", "df", "MS", "F-value", "p-value", "Sig."]
+        for col_num, header in enumerate(anova_headers, 1):
+            cell = ws3.cell(row=3, column=col_num, value=header)
+            cell.font = font_header
+            cell.fill = fill_header
+            cell.alignment = align_center
+
+        between_data = anova_table.get("Between", {})
+        within_data = anova_table.get("Within", {})
+        total_data = anova_table.get("Total", {})
+
+        sig_star = "ns"
+        p_val_num = between_data.get("p_value", 1.0)
+        if isinstance(p_val_num, (int, float)):
+            if p_val_num < 0.001: sig_star = "***"
+            elif p_val_num < 0.01: sig_star = "**"
+            elif p_val_num < 0.05: sig_star = "*"
+
+        anova_rows = [
+            ("Between Groups (Treatment)", between_data.get("SS"), between_data.get("df"), between_data.get("MS"), between_data.get("F"), between_data.get("p_value"), sig_star),
+            ("Within Groups (Error)", within_data.get("SS"), within_data.get("df"), within_data.get("MS"), "", "", ""),
+            ("Total", total_data.get("SS"), total_data.get("df"), "", "", "", "")
+        ]
+
+        for row_idx, r_data in enumerate(anova_rows, 4):
+            for col_num, val in enumerate(r_data, 1):
+                cell = ws3.cell(row=row_idx, column=col_num, value=val)
+                cell.border = border_all
+                if row_idx == 6:  # Total row
+                    cell.fill = fill_light
+                    cell.font = font_bold
+                else:
+                    cell.font = font_bold if col_num == 1 else font_regular
+
+                if col_num in [2, 3, 4, 5, 6]:
+                    if isinstance(val, (int, float)):
+                        cell.value = round(val, 4)
+                    cell.alignment = align_right
+                elif col_num == 7:
+                    cell.alignment = align_center
+
+        # Sheet 4: Assumption Tests
+        ws4 = wb.create_sheet(title="Assumption Tests")
+        ws4.views.sheetView[0].showGridLines = True
+
+        ws4.cell(row=1, column=1, value="Homogeneity of Variance (Levene's Test)").font = font_title
+
+        ws4.cell(row=3, column=1, value="Levene Statistic").font = font_bold
+        ws4.cell(row=3, column=2, value=levene_result.get("Statistic")).alignment = align_right
+        ws4.cell(row=4, column=1, value="p-value").font = font_bold
+        ws4.cell(row=4, column=2, value=levene_result.get("p_value")).alignment = align_right
+        ws4.cell(row=5, column=1, value="Assumption Met?").font = font_bold
+        ws4.cell(row=5, column=2, value="Yes" if levene_result.get("Equal_Variance") else "No").alignment = align_center
+
+        for r in range(3, 6):
+            ws4.cell(row=r, column=1).border = border_all
+            ws4.cell(row=r, column=1).fill = fill_light
+            ws4.cell(row=r, column=2).border = border_all
+
+        ws4.cell(row=7, column=1, value="Levene's Test Interpretation:").font = font_bold
+        equal_var = levene_result.get("Equal_Variance", False)
+        lev_interp = "Variances appear sufficiently equal across treatment groups. Standard ANOVA assumptions are met." if equal_var else "Group variances differ significantly. ANOVA is generally robust to moderate variance differences when group sizes are equal, but results should be interpreted cautiously."
+        c_lev_text = ws4.cell(row=8, column=1, value=lev_interp)
+        c_lev_text.font = font_regular
+        c_lev_text.alignment = Alignment(wrap_text=True, vertical="top")
+        ws4.merge_cells(start_row=8, start_column=1, end_row=9, end_column=5)
+
+        ws4.cell(row=11, column=1, value="Normality Check (Shapiro-Wilk Test)").font = font_title
+
+        shapiro_headers = ["Group", "W Statistic", "p-value", "Interpretation"]
+        for col_num, header in enumerate(shapiro_headers, 1):
+            cell = ws4.cell(row=13, column=col_num, value=header)
+            cell.font = font_header
+            cell.fill = fill_header
+            cell.alignment = align_center
+
+        for row_idx, r_data in enumerate(shapiro_results, 14):
+            is_normal = r_data.get("Normal")
+            if is_normal is None:
+                normal_text = r_data.get("Note", "N < 3")
+            else:
+                normal_text = "Approximately normal" if is_normal else "Possible deviation from normality"
+
+            ws4.cell(row=row_idx, column=1, value=r_data.get("Group")).font = font_bold
+            
+            w_stat = r_data.get("Statistic")
+            ws4.cell(row=row_idx, column=2, value=round(w_stat, 4) if isinstance(w_stat, (int, float)) else w_stat).alignment = align_right
+            
+            p_val_sh = r_data.get("p_value")
+            ws4.cell(row=row_idx, column=3, value=round(p_val_sh, 4) if isinstance(p_val_sh, (int, float)) else p_val_sh).alignment = align_right
+            
+            ws4.cell(row=row_idx, column=4, value=normal_text).alignment = align_left
+
+            for col_num in range(1, 5):
+                cell = ws4.cell(row=row_idx, column=col_num)
+                cell.font = font_bold if col_num == 1 else font_regular
+                cell.border = border_all
+
+        # Sheet 5: Tukey HSD
+        ws5 = wb.create_sheet(title="Tukey HSD")
+        ws5.views.sheetView[0].showGridLines = True
+        ws5.cell(row=1, column=1, value="Post-Hoc Pairwise Comparisons (Tukey HSD)").font = font_title
+
+        tukey_headers = ["Comparison", "Mean Difference", "Adjusted p-value", "95% CI Lower", "95% CI Upper", "Significant?"]
+        for col_num, header in enumerate(tukey_headers, 1):
+            cell = ws5.cell(row=3, column=col_num, value=header)
+            cell.font = font_header
+            cell.fill = fill_header
+            cell.alignment = align_center
+
+        for row_idx, r_data in enumerate(tukey_results, 4):
+            comp_name = f"{r_data.get('group1')} vs {r_data.get('group2')}"
+            ws5.cell(row=row_idx, column=1, value=comp_name).font = font_bold
+            ws5.cell(row=row_idx, column=2, value=round(r_data.get("meandiff", 0), 4)).alignment = align_right
+            
+            p_adj_val = r_data.get("p_adj")
+            ws5.cell(row=row_idx, column=3, value=round(p_adj_val, 4) if isinstance(p_adj_val, (int, float)) else p_adj_val).alignment = align_right
+            
+            ws5.cell(row=row_idx, column=4, value=round(r_data.get("lower", 0), 4)).alignment = align_right
+            ws5.cell(row=row_idx, column=5, value=round(r_data.get("upper", 0), 4)).alignment = align_right
+
+            reject = r_data.get("reject", False)
+            sig_text = "Significant" if reject else "Not Significant"
+            ws5.cell(row=row_idx, column=6, value=sig_text).alignment = align_center
+
+            for col_num in range(1, 7):
+                cell = ws5.cell(row=row_idx, column=col_num)
+                cell.font = font_bold if col_num == 1 else font_regular
+                cell.border = border_all
+                if col_num == 6 and reject:
+                    cell.fill = fill_sig
+
+        # Sheet 6: Graph
+        ws6 = wb.create_sheet(title="Graph")
+        ws6.views.sheetView[0].showGridLines = True
+        ws6.cell(row=1, column=1, value="Seedling Growth Analysis Graph").font = font_title
+        if img:
+            ws6.add_image(img, "B3")
+
+        # Auto-adjust column widths safely
+        for ws in wb.worksheets:
+            if ws.title == "Graph":
+                continue
+            for col in ws.columns:
+                max_len = 0
+                col_letter = openpyxl.utils.get_column_letter(col[0].column)
+                for cell in col:
+                    if cell.value is not None:
+                        val_str = str(cell.value)
+                        # Skip merged cells and long descriptions from auto-width to prevent huge columns
+                        if len(val_str) > 50:
+                            continue
+                        lines = val_str.split('\n')
+                        for line in lines:
+                            max_len = max(max_len, len(line))
+                ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+        # Save to memory
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        # Dynamic filenames
+        safe_crop = str(crop).replace(" ", "")
+        safe_var = str(variable).replace(" ", "")
+        safe_day = str(day).replace(" ", "")
+        
+        factor_suffix = ""
+        if factor == "Concentration":
+            factor_suffix = str(biochar).replace(" ", "_")
+        elif factor == "Biochar":
+            factor_suffix = "Biochar"
+        else:
+            factor_suffix = str(factor).replace(" ", "")
+            
+        filename = f"{safe_crop}_{safe_var}_{safe_day}_{factor_suffix}_Report.xlsx"
+
+        return send_file(
+            output,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name=filename
+        )
+
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": f"Excel generation failed: {str(e)}"}), 500
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+

@@ -63,6 +63,93 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    // Download Excel Report button listener
+    const downloadExcelBtn = document.getElementById("download-oneway-excel");
+    if (downloadExcelBtn) {
+        downloadExcelBtn.addEventListener("click", () => {
+            if (!lastOneWayData) return;
+            
+            const originalText = downloadExcelBtn.textContent;
+            downloadExcelBtn.disabled = true;
+            downloadExcelBtn.textContent = "Generating Report...";
+            
+            const crop = document.getElementById("crop").value;
+            const variable = document.getElementById("variable").value;
+            const day = document.getElementById("day").value;
+            const factor = document.getElementById("factor").value;
+            const biochar = document.getElementById("biochar_filter").value;
+            
+            // Generate PNG base64 from active Chart.js instance
+            const chartImage = activeOneWayChart ? activeOneWayChart.toBase64Image() : "";
+            
+            // Build statistical interpretation text same as UI
+            const isSignificant = lastOneWayData.anova_table.Significant;
+            let inferenceSummary = "";
+            if (isSignificant) {
+                inferenceSummary = `Statistically Significant (p < 0.05). Reject null hypothesis H0. There is a statistically significant difference in mean ${lastOneWayData.variable} across different levels of ${lastOneWayData.factor}. Tukey HSD post-hoc test comparisons are valid.`;
+            } else {
+                inferenceSummary = `Not Statistically Significant (p >= 0.05). Fail to reject H0. There is no statistically significant difference in mean ${lastOneWayData.variable} across different levels of ${lastOneWayData.factor}.`;
+            }
+            
+            const payload = {
+                crop,
+                variable,
+                day,
+                factor,
+                biochar,
+                summary_stats: lastOneWayData.summary_stats,
+                anova_table: lastOneWayData.anova_table,
+                levene_result: lastOneWayData.levene_result,
+                shapiro_results: lastOneWayData.shapiro_results,
+                tukey_results: lastOneWayData.tukey_results,
+                inference_summary: inferenceSummary,
+                chart_image: chartImage
+            };
+            
+            fetch("/api/export-excel", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error("Failed to generate Excel report");
+                }
+                return response.blob();
+            })
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                
+                let factorSuffix = "";
+                if (factor === "Concentration") {
+                    factorSuffix = biochar.replace(/\s+/g, "");
+                } else if (factor === "Biochar") {
+                    const concVal = document.getElementById("concentration_filter").value;
+                    factorSuffix = "Conc" + concVal.replace(".", "_");
+                } else {
+                    factorSuffix = factor;
+                }
+                
+                a.download = `${crop}_${variable.replace(/\s+/g, "")}_${day.replace(/\s+/g, "")}_${factorSuffix}_Report.xlsx`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+            })
+            .catch(error => {
+                showError("Excel Export Error: " + error.message);
+            })
+            .finally(() => {
+                downloadExcelBtn.disabled = false;
+                downloadExcelBtn.textContent = originalText;
+            });
+        });
+    }
+
     // Handle tab changes to dynamically hide/show sidebar filters
     document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(tabEl => {
         tabEl.addEventListener('shown.bs.tab', event => {
