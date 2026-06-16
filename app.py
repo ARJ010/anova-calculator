@@ -8,7 +8,7 @@ app = Flask(__name__)
 
 # Resolve workbook path relative to the app file location
 BASE_DIR = Path(__file__).resolve().parent
-WORKBOOK_PATH = BASE_DIR.parent / "Base" / "Biochar_Onion_Pea_Final.xlsx"
+WORKBOOK_PATH = BASE_DIR / "Base" / "Biochar_Onion_Pea_Final.xlsx"
 
 # Master flat dataframe cache
 FLAT_DF = None
