@@ -445,10 +445,10 @@ function drawOneWayScatterPlot(data) {
                     {
                         label: 'Group Mean',
                         data: meanValues,
-                        backgroundColor: 'rgba(33, 115, 70, 0.75)', // clean academic forest green
-                        borderColor: 'rgba(33, 115, 70, 1)',
+                        backgroundColor: 'rgba(74, 85, 104, 0.8)', // clean academic slate gray
+                        borderColor: 'rgba(45, 55, 72, 1)', // charcoal border
                         borderWidth: 1.5,
-                        barPercentage: 0.55
+                        barPercentage: 0.5
                     }
                 ]
             },
@@ -459,18 +459,60 @@ function drawOneWayScatterPlot(data) {
                     x: {
                         title: {
                             display: true,
-                            text: xAxisLabel
+                            text: xAxisLabel,
+                            color: '#2d3748',
+                            font: {
+                                size: 12,
+                                weight: 'bold'
+                            }
+                        },
+                        grid: {
+                            display: false
+                        },
+                        border: {
+                            display: true,
+                            color: '#2d3748',
+                            width: 1.5
+                        },
+                        ticks: {
+                            color: '#2d3748',
+                            font: {
+                                size: 11
+                            }
                         }
                     },
                     y: {
                         title: {
                             display: true,
-                            text: data.variable + ' (cm)'
+                            text: data.variable + ' (cm)',
+                            color: '#2d3748',
+                            font: {
+                                size: 12,
+                                weight: 'bold'
+                            }
                         },
-                        beginAtZero: true
+                        beginAtZero: true,
+                        grid: {
+                            color: '#f1f5f9',
+                            drawTicks: true
+                        },
+                        border: {
+                            display: true,
+                            color: '#2d3748',
+                            width: 1.5
+                        },
+                        ticks: {
+                            color: '#2d3748',
+                            font: {
+                                size: 11
+                            }
+                        }
                     }
                 },
                 plugins: {
+                    legend: {
+                        display: false
+                    },
                     tooltip: {
                         callbacks: {
                             label: function(context) {
@@ -508,11 +550,11 @@ function drawOneWayScatterPlot(data) {
                     {
                         label: 'Replicate Observations',
                         data: scatterPoints,
-                        backgroundColor: 'rgba(33, 115, 70, 0.2)', // reduced opacity from 0.3 to 0.2 for lighter weight
-                        borderColor: 'rgba(33, 115, 70, 0.4)',      // reduced opacity from 0.6 to 0.4
+                        backgroundColor: 'rgba(33, 115, 70, 0.21)', // reduced opacity from 0.3 to 0.21 for lighter weight
+                        borderColor: 'rgba(33, 115, 70, 0.25)',      // reduced opacity from 0.6 to 0.25 to prevent heavy borders
                         borderWidth: 1,
-                        pointRadius: 6,
-                        pointHoverRadius: 8
+                        pointRadius: 5,                            // slightly smaller for elegance
+                        pointHoverRadius: 7
                     },
                     {
                         label: 'Group Mean',
@@ -520,9 +562,9 @@ function drawOneWayScatterPlot(data) {
                         backgroundColor: '#212529', // dark charcoal mean marker
                         borderColor: '#212529',
                         borderWidth: 2.5,          // thickened border
-                        pointRadius: 10,           // increased marker size from 9 to 10
+                        pointRadius: 11,           // increased marker size from 10 to 11
                         pointStyle: 'rectRot',     // rotated square (diamond)
-                        pointHoverRadius: 12
+                        pointHoverRadius: 13
                     }
                 ]
             },
@@ -535,10 +577,27 @@ function drawOneWayScatterPlot(data) {
                         position: 'bottom',
                         title: {
                             display: true,
-                            text: xAxisLabel
+                            text: xAxisLabel,
+                            color: '#2d3748',
+                            font: {
+                                size: 12,
+                                weight: 'bold'
+                            }
+                        },
+                        grid: {
+                            display: false
+                        },
+                        border: {
+                            display: true,
+                            color: '#2d3748',
+                            width: 1.5
                         },
                         ticks: {
                             stepSize: 1,
+                            color: '#2d3748',
+                            font: {
+                                size: 11
+                            },
                             callback: function(value, index, values) {
                                 if (value >= 0 && value < groupNames.length && Number.isInteger(value)) {
                                     return groupNames[value];
@@ -552,11 +611,41 @@ function drawOneWayScatterPlot(data) {
                     y: {
                         title: {
                             display: true,
-                            text: data.variable + ' (cm)'
+                            text: data.variable + ' (cm)',
+                            color: '#2d3748',
+                            font: {
+                                size: 12,
+                                weight: 'bold'
+                            }
+                        },
+                        grid: {
+                            color: '#f1f5f9'
+                        },
+                        border: {
+                            display: true,
+                            color: '#2d3748',
+                            width: 1.5
+                        },
+                        ticks: {
+                            color: '#2d3748',
+                            font: {
+                                size: 11
+                            }
                         }
                     }
                 },
                 plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: {
+                            boxWidth: 12,
+                            font: {
+                                size: 11
+                            },
+                            color: '#2d3748'
+                        }
+                    },
                     tooltip: {
                         callbacks: {
                             label: function(context) {
@@ -875,11 +964,27 @@ function drawTwoWayInteractionPlot(data) {
                     position: 'bottom',
                     title: {
                         display: true,
-                        text: 'Biochar Concentration (g/L)'
+                        text: 'Biochar Concentration (g/L)',
+                        color: '#2d3748',
+                        font: {
+                            size: 12,
+                            weight: 'bold'
+                        }
+                    },
+                    grid: {
+                        display: false
+                    },
+                    border: {
+                        display: true,
+                        color: '#2d3748',
+                        width: 1.5
                     },
                     ticks: {
-                        // explicitly display measured concentration ticks
                         stepSize: 0.5,
+                        color: '#2d3748',
+                        font: {
+                            size: 11
+                        },
                         callback: function(value) {
                             return value === 0 ? "0.0 (Ctrl)" : value.toFixed(1) + " g/L";
                         }
@@ -888,11 +993,41 @@ function drawTwoWayInteractionPlot(data) {
                 y: {
                     title: {
                         display: true,
-                        text: 'Mean ' + data.variable + ' (cm)'
+                        text: 'Mean ' + data.variable + ' (cm)',
+                        color: '#2d3748',
+                        font: {
+                            size: 12,
+                            weight: 'bold'
+                        }
+                    },
+                    grid: {
+                        color: '#f1f5f9'
+                    },
+                    border: {
+                        display: true,
+                        color: '#2d3748',
+                        width: 1.5
+                    },
+                    ticks: {
+                        color: '#2d3748',
+                        font: {
+                            size: 11
+                        }
                     }
                 }
             },
             plugins: {
+                legend: {
+                    display: true,
+                    position: 'top',
+                    labels: {
+                        boxWidth: 12,
+                        font: {
+                            size: 11
+                        },
+                        color: '#2d3748'
+                    }
+                },
                 tooltip: {
                     callbacks: {
                         label: function(context) {
