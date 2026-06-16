@@ -1,5 +1,31 @@
 // ANOVA Calculator Frontend Script (MVP)
 
+// Helper to format group names (e.g. 0.0 to Control)
+function formatGroupName(name) {
+    const nameStr = String(name).trim();
+    if (nameStr === "0.0" || nameStr === "0") {
+        return "Control";
+    }
+    return name;
+}
+
+// Helper to generate a chart base64 image with a solid white background
+function getChartImageWithWhiteBackground(chart) {
+    if (!chart) return "";
+    const tempCanvas = document.createElement("canvas");
+    const ctx = tempCanvas.getContext("2d");
+    const chartCanvas = chart.canvas;
+    
+    tempCanvas.width = chartCanvas.width;
+    tempCanvas.height = chartCanvas.height;
+    
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+    ctx.drawImage(chartCanvas, 0, 0);
+    
+    return tempCanvas.toDataURL("image/png");
+}
+
 let metadata = {};
 let activeOneWayChart = null;
 let activeTwoWayChart = null;
@@ -58,7 +84,7 @@ document.addEventListener("DOMContentLoaded", () => {
             
             const link = document.createElement('a');
             link.download = filename;
-            link.href = activeOneWayChart.toBase64Image();
+            link.href = getChartImageWithWhiteBackground(activeOneWayChart);
             link.click();
         });
     }
@@ -79,8 +105,8 @@ document.addEventListener("DOMContentLoaded", () => {
             const factor = document.getElementById("factor").value;
             const biochar = document.getElementById("biochar_filter").value;
             
-            // Generate PNG base64 from active Chart.js instance
-            const chartImage = activeOneWayChart ? activeOneWayChart.toBase64Image() : "";
+            // Generate PNG base64 from active Chart.js instance with solid white background
+            const chartImage = activeOneWayChart ? getChartImageWithWhiteBackground(activeOneWayChart) : "";
             
             // Build statistical interpretation text same as UI
             const isSignificant = lastOneWayData.anova_table.Significant;
@@ -326,7 +352,7 @@ function renderOneWayResults(data) {
         const tr = document.createElement("tr");
         const seVal = row.SE !== undefined ? row.SE : (row.SD / Math.sqrt(row.N));
         tr.innerHTML = `
-            <td><strong>${row.Group}</strong></td>
+            <td><strong>${formatGroupName(row.Group)}</strong></td>
             <td>${row.N}</td>
             <td>${row.Sum.toFixed(4)}</td>
             <td class="table-success fw-bold">${row.Mean.toFixed(4)}</td>
@@ -400,7 +426,7 @@ function renderOneWayResults(data) {
         const pValue = row.p_value !== null ? row.p_value.toFixed(4) : row.Note || "-";
         
         tr.innerHTML = `
-            <td><strong>${row.Group}</strong></td>
+            <td><strong>${formatGroupName(row.Group)}</strong></td>
             <td>${wStat}</td>
             <td>${pValue}</td>
             <td>${normalText}</td>
@@ -428,7 +454,7 @@ function renderOneWayResults(data) {
         const tr = document.createElement("tr");
         const sigText = row.reject ? "<span class='text-danger fw-bold'>Significant</span>" : "<span class='text-secondary'>Not Significant</span>";
         tr.innerHTML = `
-            <td><strong>${row.group1} vs ${row.group2}</strong></td>
+            <td><strong>${formatGroupName(row.group1)} vs ${formatGroupName(row.group2)}</strong></td>
             <td>${row.meandiff.toFixed(4)}</td>
             <td class="${row.reject ? 'text-success fw-bold' : ''}">${row.p_adj.toFixed(4)}</td>
             <td>[${row.lower.toFixed(4)}, ${row.upper.toFixed(4)}]</td>
@@ -450,20 +476,39 @@ function renderOneWayResults(data) {
     document.getElementById("oneway-results").style.display = "block";
 }
 
-// Render replication points and group means on Chart.js for One-Way
+// // Render replication points and group means on Chart.js for One-Way
 function drawOneWayScatterPlot(data) {
     if (activeOneWayChart) {
         activeOneWayChart.destroy();
     }
 
     const ctx = document.getElementById("boxplot-canvas").getContext("2d");
-    const groupNames = data.summary_stats.map(s => s.Group);
+    const groupNames = data.summary_stats.map(s => formatGroupName(s.Group));
     
     // Axis label mapping
     let xAxisLabel = data.factor;
     if (data.factor === "Concentration") xAxisLabel = "Biochar Concentration (g/L)";
     else if (data.factor === "Biochar") xAxisLabel = "Biochar Type";
     else if (data.factor === "Day") xAxisLabel = "Measurement Day";
+
+    // Calculate dynamic Y-axis ranges with padding for visual density
+    const replicateValues = data.raw_data_points.map(pt => pt.Value);
+    const minRepVal = replicateValues.length > 0 ? Math.min(...replicateValues) : 0;
+    const maxRepVal = replicateValues.length > 0 ? Math.max(...replicateValues) : 10;
+    
+    const meansWithSE = data.summary_stats.map(s => s.Mean + (s.SE !== undefined ? s.SE : 0));
+    const maxMeanWithSE = meansWithSE.length > 0 ? Math.max(...meansWithSE) : 10;
+    
+    const overallMax = Math.max(maxRepVal, maxMeanWithSE);
+    const overallMin = minRepVal;
+    const dataRange = overallMax - overallMin;
+    const padding = dataRange * 0.1 || 1.0; // 10% padding
+    
+    const scatterYMin = Math.max(0, overallMin - padding);
+    const scatterYMax = overallMax + padding;
+    
+    const barPadding = maxMeanWithSE * 0.1 || 1.0;
+    const barYMax = maxMeanWithSE + barPadding;
 
     // Custom error bars plugin (attaches strictly to category centers)
     const errorBarsPlugin = {
@@ -488,7 +533,7 @@ function drawOneWayScatterPlot(data) {
                 }
                 
                 const groupName = groupNames[index];
-                const stat = data.summary_stats.find(s => s.Group === groupName);
+                const stat = data.summary_stats.find(s => formatGroupName(s.Group) === groupName);
                 if (!stat) return;
 
                 const se = stat.SE !== undefined ? stat.SE : 0;
@@ -518,7 +563,7 @@ function drawOneWayScatterPlot(data) {
             });
             ctx.restore();
          }
-    };
+     };
 
     if (currentGraphMode === 'pub') {
         // Mode 2: Publication View (Bar Chart with Mean + SE)
@@ -530,7 +575,7 @@ function drawOneWayScatterPlot(data) {
                 labels: groupNames,
                 datasets: [
                     {
-                        label: 'Group Mean',
+                        label: 'Mean',
                         data: meanValues,
                         backgroundColor: 'rgba(74, 85, 104, 0.8)', // clean academic slate gray
                         borderColor: 'rgba(45, 55, 72, 1)', // charcoal border
@@ -579,6 +624,7 @@ function drawOneWayScatterPlot(data) {
                             }
                         },
                         beginAtZero: true,
+                        max: barYMax,
                         grid: {
                             color: '#f1f5f9',
                             drawTicks: true
@@ -616,7 +662,8 @@ function drawOneWayScatterPlot(data) {
         // Prepare replicates dataset (with jitter)
         const scatterPoints = [];
         data.raw_data_points.forEach(pt => {
-            const groupIdx = groupNames.indexOf(pt.Group);
+            const groupIdx = groupNames.indexOf(formatGroupName(pt.Group));
+            if (groupIdx === -1) return;
             const jitter = (Math.random() - 0.5) * 0.22;
             scatterPoints.push({
                 x: groupIdx + jitter,
@@ -635,7 +682,7 @@ function drawOneWayScatterPlot(data) {
             data: {
                 datasets: [
                     {
-                        label: 'Replicate Observations',
+                        label: 'Replicates',
                         data: scatterPoints,
                         backgroundColor: 'rgba(33, 115, 70, 0.21)', // reduced opacity from 0.3 to 0.21 for lighter weight
                         borderColor: 'rgba(33, 115, 70, 0.25)',      // reduced opacity from 0.6 to 0.25 to prevent heavy borders
@@ -644,7 +691,7 @@ function drawOneWayScatterPlot(data) {
                         pointHoverRadius: 7
                     },
                     {
-                        label: 'Group Mean',
+                        label: 'Mean',
                         data: meanPoints,
                         backgroundColor: '#212529', // dark charcoal mean marker
                         borderColor: '#212529',
@@ -705,6 +752,8 @@ function drawOneWayScatterPlot(data) {
                                 weight: 'bold'
                             }
                         },
+                        min: scatterYMin,
+                        max: scatterYMax,
                         grid: {
                             color: '#f1f5f9'
                         },

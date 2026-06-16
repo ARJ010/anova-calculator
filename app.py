@@ -309,7 +309,17 @@ def api_one_way():
 
     # 1. Summary Statistics for each group (Astatsa-style)
     summary_stats = []
-    group_names = sorted(list(sanitized_groups.keys()), key=lambda x: float(x) if is_numeric(x) else x)
+    def sorting_key(group_name):
+        name_str = str(group_name).strip()
+        if name_str.lower() in ["control", "0.0", "0"]:
+            return (0, 0.0, name_str)
+        try:
+            val = float(name_str)
+            return (1, val, name_str)
+        except ValueError:
+            return (2, name_str.lower(), name_str)
+
+    group_names = sorted(list(sanitized_groups.keys()), key=sorting_key)
     
     anova_inputs = [sanitized_groups[name] for name in group_names]
 
@@ -706,6 +716,12 @@ def api_two_way():
 @app.route("/api/export-excel", methods=["POST"])
 def export_excel():
     try:
+        def format_group_name(name):
+            name_str = str(name).strip()
+            if name_str == "0.0" or name_str == "0":
+                return "Control"
+            return name_str
+
         data = request.get_json()
         if not data:
             return jsonify({"status": "error", "message": "No data provided"}), 400
@@ -821,7 +837,7 @@ def export_excel():
             cell.alignment = align_center
 
         for row_idx, r_data in enumerate(summary_stats, 4):
-            ws2.cell(row=row_idx, column=1, value=r_data.get("Group")).font = font_bold
+            ws2.cell(row=row_idx, column=1, value=format_group_name(r_data.get("Group"))).font = font_bold
             ws2.cell(row=row_idx, column=2, value=r_data.get("N")).alignment = align_center
             ws2.cell(row=row_idx, column=3, value=r_data.get("Sum"))
             ws2.cell(row=row_idx, column=4, value=r_data.get("Mean"))
@@ -933,7 +949,7 @@ def export_excel():
             else:
                 normal_text = "Approximately normal" if is_normal else "Possible deviation from normality"
 
-            ws4.cell(row=row_idx, column=1, value=r_data.get("Group")).font = font_bold
+            ws4.cell(row=row_idx, column=1, value=format_group_name(r_data.get("Group"))).font = font_bold
             
             w_stat = r_data.get("Statistic")
             ws4.cell(row=row_idx, column=2, value=round(w_stat, 4) if isinstance(w_stat, (int, float)) else w_stat).alignment = align_right
@@ -961,7 +977,7 @@ def export_excel():
             cell.alignment = align_center
 
         for row_idx, r_data in enumerate(tukey_results, 4):
-            comp_name = f"{r_data.get('group1')} vs {r_data.get('group2')}"
+            comp_name = f"{format_group_name(r_data.get('group1'))} vs {format_group_name(r_data.get('group2'))}"
             ws5.cell(row=row_idx, column=1, value=comp_name).font = font_bold
             ws5.cell(row=row_idx, column=2, value=round(r_data.get("meandiff", 0), 4)).alignment = align_right
             
