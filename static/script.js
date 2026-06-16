@@ -4,6 +4,8 @@ let metadata = {};
 let activeOneWayChart = null;
 let activeTwoWayChart = null;
 let twoWayPostHocData = {};
+let lastOneWayData = null;
+let currentGraphMode = 'dist'; // 'dist' or 'pub'
 
 document.addEventListener("DOMContentLoaded", () => {
     fetchMetadata();
@@ -19,6 +21,16 @@ document.addEventListener("DOMContentLoaded", () => {
     // Post-hoc selector for Two-Way Simple Main Effects
     document.getElementById("posthoc-biochar-select").addEventListener("change", (e) => {
         renderTwoWayPostHocTable(e.target.value);
+    });
+
+    // Listen to changes in graph view mode
+    document.querySelectorAll('input[name="graphMode"]').forEach(radio => {
+        radio.addEventListener("change", (e) => {
+            currentGraphMode = e.target.id === 'mode-pub' ? 'pub' : 'dist';
+            if (lastOneWayData) {
+                drawOneWayScatterPlot(lastOneWayData);
+            }
+        });
     });
 
     // Download chart button listener
@@ -341,6 +353,9 @@ function renderOneWayResults(data) {
     // 6. Exposed Hidden Debug details
     document.getElementById("oneway-debug-panel").textContent = JSON.stringify(data.debug_details, null, 2);
 
+    // Save data for re-drawing
+    lastOneWayData = data;
+
     // 7. Render Scatter Plot Chart
     drawOneWayScatterPlot(data);
 
@@ -357,44 +372,34 @@ function drawOneWayScatterPlot(data) {
     const ctx = document.getElementById("boxplot-canvas").getContext("2d");
     const groupNames = data.summary_stats.map(s => s.Group);
     
-    // Prepare replicates dataset (with jitter)
-    const scatterPoints = [];
-    data.raw_data_points.forEach(pt => {
-        const groupIdx = groupNames.indexOf(pt.Group);
-        const jitter = (Math.random() - 0.5) * 0.22;
-        scatterPoints.push({
-            x: groupIdx + jitter,
-            y: pt.Value
-        });
-    });
-
-    // Prepare Means dataset (no jitter, larger marker)
-    const meanPoints = data.summary_stats.map((s, idx) => ({
-        x: idx,
-        y: s.Mean
-    }));
-
     // Axis label mapping
     let xAxisLabel = data.factor;
     if (data.factor === "Concentration") xAxisLabel = "Biochar Concentration (g/L)";
     else if (data.factor === "Biochar") xAxisLabel = "Biochar Type";
     else if (data.factor === "Day") xAxisLabel = "Measurement Day";
 
-    // Custom error bars plugin (attaches strictly to category centers and mean points)
+    // Custom error bars plugin (attaches strictly to category centers)
     const errorBarsPlugin = {
         id: 'errorBars',
         afterDatasetsDraw(chart) {
             const { ctx, scales: { x, y } } = chart;
-            const meanMeta = chart.getDatasetMeta(1);
-            const meanDataset = chart.data.datasets[1];
+            const isBar = chart.config.type === 'bar';
+            const meanMeta = chart.getDatasetMeta(isBar ? 0 : 1);
+            const meanDataset = chart.data.datasets[isBar ? 0 : 1];
             if (!meanDataset || !meanMeta || !meanMeta.data) return;
 
             ctx.save();
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = 2.0; // Slightly thickened error bars
             ctx.strokeStyle = '#212529'; // Dark charcoal matching mean marker
 
             meanMeta.data.forEach((point, index) => {
-                const meanVal = meanDataset.data[index].y;
+                let meanVal;
+                if (isBar) {
+                    meanVal = meanDataset.data[index];
+                } else {
+                    meanVal = meanDataset.data[index].y;
+                }
+                
                 const groupName = groupNames[index];
                 const stat = data.summary_stats.find(s => s.Group === groupName);
                 if (!stat) return;
@@ -428,77 +433,146 @@ function drawOneWayScatterPlot(data) {
          }
     };
 
-    activeOneWayChart = new Chart(ctx, {
-        type: 'scatter',
-        data: {
-            datasets: [
-                {
-                    label: 'Replicate Observations',
-                    data: scatterPoints,
-                    backgroundColor: 'rgba(33, 115, 70, 0.3)', // lightly transparent forest green
-                    borderColor: 'rgba(33, 115, 70, 0.6)',
-                    borderWidth: 1,
-                    pointRadius: 6,
-                    pointHoverRadius: 8
-                },
-                {
-                    label: 'Group Mean',
-                    data: meanPoints,
-                    backgroundColor: '#212529', // dark charcoal mean marker
-                    borderColor: '#212529',
-                    borderWidth: 2,
-                    pointRadius: 9,
-                    pointStyle: 'rectRot', // rotated square (diamond)
-                    pointHoverRadius: 11
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            scales: {
-                x: {
-                    type: 'linear',
-                    position: 'bottom',
-                    title: {
-                        display: true,
-                        text: xAxisLabel
-                    },
-                    ticks: {
-                        stepSize: 1,
-                        callback: function(value, index, values) {
-                            if (value >= 0 && value < groupNames.length && Number.isInteger(value)) {
-                                return groupNames[value];
-                            }
-                            return '';
+    if (currentGraphMode === 'pub') {
+        // Mode 2: Publication View (Bar Chart with Mean + SE)
+        const meanValues = data.summary_stats.map(s => s.Mean);
+
+        activeOneWayChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: groupNames,
+                datasets: [
+                    {
+                        label: 'Group Mean',
+                        data: meanValues,
+                        backgroundColor: 'rgba(33, 115, 70, 0.75)', // clean academic forest green
+                        borderColor: 'rgba(33, 115, 70, 1)',
+                        borderWidth: 1.5,
+                        barPercentage: 0.55
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        title: {
+                            display: true,
+                            text: xAxisLabel
                         }
                     },
-                    min: -0.5,
-                    max: groupNames.length - 0.5
+                    y: {
+                        title: {
+                            display: true,
+                            text: data.variable + ' (cm)'
+                        },
+                        beginAtZero: true
+                    }
                 },
-                y: {
-                    title: {
-                        display: true,
-                        text: data.variable + ' (cm)'
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return 'Group Mean: ' + context.raw.toFixed(4) + ' cm';
+                            }
+                        }
                     }
                 }
             },
-            plugins: {
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            if (context.datasetIndex === 1) {
-                                return 'Group Mean: ' + context.raw.y.toFixed(4) + ' cm';
+            plugins: [errorBarsPlugin]
+        });
+    } else {
+        // Mode 1: Distribution View (Jittered Scatter + Mean + SE)
+        // Prepare replicates dataset (with jitter)
+        const scatterPoints = [];
+        data.raw_data_points.forEach(pt => {
+            const groupIdx = groupNames.indexOf(pt.Group);
+            const jitter = (Math.random() - 0.5) * 0.22;
+            scatterPoints.push({
+                x: groupIdx + jitter,
+                y: pt.Value
+            });
+        });
+
+        // Prepare Means dataset (no jitter, larger marker)
+        const meanPoints = data.summary_stats.map((s, idx) => ({
+            x: idx,
+            y: s.Mean
+        }));
+
+        activeOneWayChart = new Chart(ctx, {
+            type: 'scatter',
+            data: {
+                datasets: [
+                    {
+                        label: 'Replicate Observations',
+                        data: scatterPoints,
+                        backgroundColor: 'rgba(33, 115, 70, 0.2)', // reduced opacity from 0.3 to 0.2 for lighter weight
+                        borderColor: 'rgba(33, 115, 70, 0.4)',      // reduced opacity from 0.6 to 0.4
+                        borderWidth: 1,
+                        pointRadius: 6,
+                        pointHoverRadius: 8
+                    },
+                    {
+                        label: 'Group Mean',
+                        data: meanPoints,
+                        backgroundColor: '#212529', // dark charcoal mean marker
+                        borderColor: '#212529',
+                        borderWidth: 2.5,          // thickened border
+                        pointRadius: 10,           // increased marker size from 9 to 10
+                        pointStyle: 'rectRot',     // rotated square (diamond)
+                        pointHoverRadius: 12
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        type: 'linear',
+                        position: 'bottom',
+                        title: {
+                            display: true,
+                            text: xAxisLabel
+                        },
+                        ticks: {
+                            stepSize: 1,
+                            callback: function(value, index, values) {
+                                if (value >= 0 && value < groupNames.length && Number.isInteger(value)) {
+                                    return groupNames[value];
+                                }
+                                return '';
                             }
-                            const groupLabel = groupNames[Math.round(context.raw.x)];
-                            return `Group ${groupLabel}: ${context.raw.y.toFixed(4)} cm`;
+                        },
+                        min: -0.5,
+                        max: groupNames.length - 0.5
+                    },
+                    y: {
+                        title: {
+                            display: true,
+                            text: data.variable + ' (cm)'
+                        }
+                    }
+                },
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                if (context.datasetIndex === 1) {
+                                    return 'Group Mean: ' + context.raw.y.toFixed(4) + ' cm';
+                                }
+                                const groupLabel = groupNames[Math.round(context.raw.x)];
+                                return `Group ${groupLabel}: ${context.raw.y.toFixed(4)} cm`;
+                            }
                         }
                     }
                 }
-            }
-        },
-        plugins: [errorBarsPlugin]
-    });
+            },
+            plugins: [errorBarsPlugin]
+        });
+    }
 }
 
 // Trigger Two-Way ANOVA computation
