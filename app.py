@@ -216,6 +216,97 @@ def api_metadata():
         "metadata": metadata
     })
 
+def format_group_name(name):
+    name_str = str(name).strip().lower()
+    if name_str in ["control", "0.0", "0"]:
+        return "Control"
+    return str(name).strip()
+
+def format_p_value(p):
+    """
+    Publication-safe p-value formatter.
+    """
+    if p is None:
+        return "N/A"
+    try:
+        p_val = float(p)
+    except (ValueError, TypeError):
+        return str(p)
+        
+    if p_val == 0.0:
+        return "< 0.0001 (<1e-16)"
+        
+    if p_val >= 0.0001:
+        return f"{p_val:.4f}"
+    else:
+        formatted_sci = f"{p_val:.2e}"
+        if formatted_sci.startswith("0.00") or formatted_sci == "0.00e+00":
+            return "< 0.0001 (<1e-16)"
+        return f"< 0.0001 ({formatted_sci})"
+
+def get_compact_letter_display(groups, tukey_results, group_means):
+    """
+    groups: list of group names (strings)
+    tukey_results: list of dicts, each with group1, group2, reject (bool)
+    group_means: dict of {group_name: mean_value}
+    """
+    n_groups = len(groups)
+    if n_groups == 0:
+        return {}
+    
+    # Sort groups descending by mean to rank them
+    sorted_groups_by_mean = sorted(groups, key=lambda g: group_means.get(g, 0.0), reverse=True)
+    group_ranks = {g: idx for idx, g in enumerate(sorted_groups_by_mean)}
+    
+    # Build adjacency list of non-significance graph (edges exist if reject is False)
+    adj = {g: set() for g in groups}
+    
+    significant_pairs = set()
+    for res in tukey_results:
+        g1, g2 = res['group1'], res['group2']
+        if res['reject']:
+            significant_pairs.add((g1, g2))
+            significant_pairs.add((g2, g1))
+            
+    for i in range(len(groups)):
+        for j in range(i + 1, len(groups)):
+            g1, g2 = groups[i], groups[j]
+            if (g1, g2) not in significant_pairs:
+                adj[g1].add(g2)
+                adj[g2].add(g1)
+                
+    # Find all maximal cliques using Bron-Kerbosch algorithm
+    cliques = []
+    def bron_kerbosch(r, p, x):
+        if not p and not x:
+            cliques.append(r)
+            return
+        # Deterministic order sorted by mean rank
+        for vertex in sorted(list(p), key=lambda g: group_ranks.get(g, 999)):
+            bron_kerbosch(
+                r.union([vertex]),
+                p.intersection(adj[vertex]),
+                x.intersection(adj[vertex])
+            )
+            p.remove(vertex)
+            x.add(vertex)
+            
+    bron_kerbosch(set(), set(groups), set())
+    
+    # Sort cliques deterministically by the sorted list of their group ranks
+    cliques.sort(key=lambda c: sorted([group_ranks[g] for g in c]))
+    
+    # Assign lowercase letters ('a', 'b', 'c', ...) to cliques
+    group_letters = {g: [] for g in groups}
+    for idx, clique in enumerate(cliques):
+        letter = chr(97 + idx) # 0 -> 'a', 1 -> 'b', etc.
+        for g in clique:
+            group_letters[g].append(letter)
+            
+    # Concatenate letters and sort alphabetically (e.g. 'ab')
+    # Unify key naming: map format_group_name keys to the output dict
+    return {format_group_name(g): "".join(sorted(letters)) for g, letters in group_letters.items()}
+
 @app.route("/api/one-way", methods=["POST", "GET"])
 def api_one_way():
     if FLAT_DF is None:
@@ -360,6 +451,7 @@ def api_one_way():
                 "Group": name,
                 "Statistic": round(sh_stat, 4),
                 "p_value": round(sh_p, 4),
+                "p_value_display": format_p_value(sh_p),
                 "Normal": bool(sh_p >= 0.05)
             })
         else:
@@ -367,6 +459,7 @@ def api_one_way():
                 "Group": name,
                 "Statistic": None,
                 "p_value": None,
+                "p_value_display": "N/A",
                 "Normal": None,
                 "Note": "N < 3"
             })
@@ -376,6 +469,7 @@ def api_one_way():
     levene_result = {
         "Statistic": round(lev_stat, 4),
         "p_value": round(lev_p, 4),
+        "p_value_display": format_p_value(lev_p),
         "Equal_Variance": bool(lev_p >= 0.05)
     }
 
@@ -402,7 +496,8 @@ def api_one_way():
             "df": df_between,
             "MS": round(ms_between, 4),
             "F": round(f_stat, 4),
-            "p_value": round(f_p, 4)
+            "p_value": round(f_p, 4),
+            "p_value_display": format_p_value(f_p)
         },
         "Within": {
             "SS": round(ss_within, 4),
@@ -416,20 +511,42 @@ def api_one_way():
         "Significant": bool(f_p < 0.05)
     }
 
+    # Calculate Effect Size (eta squared)
+    eta_squared = ss_between / ss_total if ss_total > 0 else 0.0
+    if eta_squared < 0.01:
+        eta_interpretation = "Negligible"
+    elif eta_squared < 0.06:
+        eta_interpretation = "Small"
+    elif eta_squared < 0.14:
+        eta_interpretation = "Moderate"
+    else:
+        eta_interpretation = "Large"
+
     # 5. Tukey HSD Post-hoc Test
     tukey_res = mc.pairwise_tukeyhsd(np.array(all_values), np.array(all_group_labels), alpha=0.05)
     tukey_table = []
     
     for row in tukey_res._results_table.data[1:]:
         g1, g2, meandiff, p_adj, lower, upper, reject = row
+        
+        # Calculate Tukey Q statistic
+        n1 = len(sanitized_groups[str(g1)])
+        n2 = len(sanitized_groups[str(g2)])
+        mean1 = np.mean(sanitized_groups[str(g1)])
+        mean2 = np.mean(sanitized_groups[str(g2)])
+        se_comparison = np.sqrt((ms_within / 2.0) * ((1.0 / n1) + (1.0 / n2)))
+        q_stat = abs(mean1 - mean2) / se_comparison if se_comparison > 0 else 0.0
+        
         tukey_table.append({
             "group1": str(g1),
             "group2": str(g2),
             "meandiff": round(float(meandiff), 4),
             "p_adj": round(float(p_adj), 4) if isinstance(p_adj, (int, float)) else p_adj,
+            "p_adj_display": format_p_value(p_adj),
             "lower": round(float(lower), 4),
             "upper": round(float(upper), 4),
-            "reject": bool(reject)
+            "reject": bool(reject),
+            "q_stat": round(float(q_stat), 4)
         })
 
     # Prepare raw data points for boxplot plotting in frontend
@@ -455,6 +572,46 @@ def api_one_way():
         }
     }
 
+    # Calculate compact letter display (CLD)
+    group_means_for_cld = {name: np.mean(sanitized_groups[name]) for name in group_names}
+    tukey_letters = get_compact_letter_display(group_names, tukey_table, group_means_for_cld)
+
+    # Calculate Control vs Treatment Response Summary
+    control_group_name = None
+    for name in group_names:
+        if format_group_name(name) == "Control":
+            control_group_name = name
+            break
+            
+    control_response = []
+    if control_group_name is not None:
+        control_mean = debug_details["group_means"][control_group_name]
+        for name in group_names:
+            if name == control_group_name:
+                continue
+            t_mean = debug_details["group_means"][name]
+            diff = t_mean - control_mean
+            if control_mean != 0:
+                pct_change = (diff / control_mean) * 100
+            else:
+                pct_change = 0.0
+                
+            if pct_change <= -10.0:
+                interpretation = "Strong growth inhibition"
+            elif pct_change < 0.0:
+                interpretation = "Slight growth inhibition"
+            elif pct_change < 10.0:
+                interpretation = "Slight growth improvement"
+            else:
+                interpretation = "Substantial growth improvement"
+                
+            control_response.append({
+                "treatment": name,
+                "diff": round(diff, 4),
+                "pct_change": round(pct_change, 2),
+                "interpretation": interpretation
+            })
+
     response = {
         "status": "success",
         "factor": factor,
@@ -464,9 +621,13 @@ def api_one_way():
         "formula": formula_used,
         "summary_stats": summary_stats,
         "anova_table": anova_table,
+        "eta_squared": round(eta_squared, 4),
+        "eta_interpretation": eta_interpretation,
         "shapiro_results": shapiro_results,
         "levene_result": levene_result,
         "tukey_results": tukey_table,
+        "tukey_letters": tukey_letters,
+        "control_response": control_response if control_group_name is not None else None,
         "raw_data_points": raw_data_points,
         "debug_details": debug_details
     }
@@ -793,8 +954,12 @@ def export_excel():
 
         if isinstance(f_stat, (int, float)):
             f_stat = round(f_stat, 4)
-        if isinstance(p_val, (int, float)):
-            p_val = round(p_val, 4)
+            
+        p_val_display = format_p_value(p_val) if p_val is not None and p_val != "N/A" else "N/A"
+
+        eta_squared = data.get("eta_squared", "N/A")
+        eta_interpretation = data.get("eta_interpretation", "N/A")
+        control_response = data.get("control_response", None)
 
         summary_data = [
             ("Crop", crop),
@@ -803,8 +968,10 @@ def export_excel():
             ("Grouping Factor", factor),
             ("Biochar Group", biochar),
             ("F-statistic", f_stat),
-            ("p-value", p_val),
+            ("p-value", p_val_display),
             ("Significant (p < 0.05)", "Yes" if significant else "No"),
+            ("Effect Size (Eta Squared)", eta_squared),
+            ("Effect Size Interpretation", eta_interpretation)
         ]
 
         for row_idx, (field, val) in enumerate(summary_data, 4):
@@ -818,11 +985,39 @@ def export_excel():
             c_v.border = border_all
             c_v.alignment = align_left
 
-        ws1.cell(row=13, column=1, value="Inference Summary:").font = font_bold
-        c_inf = ws1.cell(row=14, column=1, value=inference_summary)
+        ws1.cell(row=15, column=1, value="Inference Summary:").font = font_bold
+        c_inf = ws1.cell(row=16, column=1, value=inference_summary)
         c_inf.font = font_regular
         c_inf.alignment = Alignment(wrap_text=True, vertical="top")
-        ws1.merge_cells(start_row=14, start_column=1, end_row=16, end_column=5)
+        ws1.merge_cells(start_row=16, start_column=1, end_row=18, end_column=5)
+
+        # Control vs Treatment Response Summary Table
+        if control_response:
+            ws1.cell(row=20, column=1, value="Control vs Treatment Response Summary").font = font_bold
+            
+            headers = ["Treatment", "Δ Mean vs Control", "% Change", "Interpretation"]
+            for col_num, h_text in enumerate(headers, 1):
+                cell = ws1.cell(row=21, column=col_num, value=h_text)
+                cell.font = font_header
+                cell.fill = fill_header
+                cell.alignment = align_center
+                
+            for idx, r in enumerate(control_response):
+                r_idx = 22 + idx
+                ws1.cell(row=r_idx, column=1, value=format_group_name(r.get("treatment"))).font = font_bold
+                ws1.cell(row=r_idx, column=2, value=r.get("diff")).alignment = align_right
+                
+                pct = r.get("pct_change")
+                pct_str = f"{pct:+.1f}%" if isinstance(pct, (int, float)) else str(pct)
+                ws1.cell(row=r_idx, column=3, value=pct_str).alignment = align_right
+                
+                ws1.cell(row=r_idx, column=4, value=r.get("interpretation")).alignment = align_left
+                
+                for col_num in range(1, 5):
+                    cell = ws1.cell(row=r_idx, column=col_num)
+                    cell.border = border_all
+                    if col_num != 1:
+                        cell.font = font_regular
 
         # Sheet 2: Descriptive Statistics
         ws2 = wb.create_sheet(title="Descriptive Statistics")
@@ -884,8 +1079,10 @@ def export_excel():
             elif p_val_num < 0.01: sig_star = "**"
             elif p_val_num < 0.05: sig_star = "*"
 
+        p_val_formatted = format_p_value(p_val_num) if p_val_num is not None and p_val_num != "N/A" else "N/A"
+
         anova_rows = [
-            ("Between Groups (Treatment)", between_data.get("SS"), between_data.get("df"), between_data.get("MS"), between_data.get("F"), between_data.get("p_value"), sig_star),
+            ("Between Groups (Treatment)", between_data.get("SS"), between_data.get("df"), between_data.get("MS"), between_data.get("F"), p_val_formatted, sig_star),
             ("Within Groups (Error)", within_data.get("SS"), within_data.get("df"), within_data.get("MS"), "", "", ""),
             ("Total", total_data.get("SS"), total_data.get("df"), "", "", "", "")
         ]
@@ -916,7 +1113,10 @@ def export_excel():
         ws4.cell(row=3, column=1, value="Levene Statistic").font = font_bold
         ws4.cell(row=3, column=2, value=levene_result.get("Statistic")).alignment = align_right
         ws4.cell(row=4, column=1, value="p-value").font = font_bold
-        ws4.cell(row=4, column=2, value=levene_result.get("p_value")).alignment = align_right
+        
+        lev_p_raw = levene_result.get("p_value")
+        lev_p_formatted = format_p_value(lev_p_raw) if lev_p_raw is not None and lev_p_raw != "N/A" else "N/A"
+        ws4.cell(row=4, column=2, value=lev_p_formatted).alignment = align_right
         ws4.cell(row=5, column=1, value="Assumption Met?").font = font_bold
         ws4.cell(row=5, column=2, value="Yes" if levene_result.get("Equal_Variance") else "No").alignment = align_center
 
@@ -955,7 +1155,8 @@ def export_excel():
             ws4.cell(row=row_idx, column=2, value=round(w_stat, 4) if isinstance(w_stat, (int, float)) else w_stat).alignment = align_right
             
             p_val_sh = r_data.get("p_value")
-            ws4.cell(row=row_idx, column=3, value=round(p_val_sh, 4) if isinstance(p_val_sh, (int, float)) else p_val_sh).alignment = align_right
+            p_val_sh_formatted = format_p_value(p_val_sh) if p_val_sh is not None and p_val_sh != "N/A" else "N/A"
+            ws4.cell(row=row_idx, column=3, value=p_val_sh_formatted).alignment = align_right
             
             ws4.cell(row=row_idx, column=4, value=normal_text).alignment = align_left
 
@@ -969,7 +1170,7 @@ def export_excel():
         ws5.views.sheetView[0].showGridLines = True
         ws5.cell(row=1, column=1, value="Post-Hoc Pairwise Comparisons (Tukey HSD)").font = font_title
 
-        tukey_headers = ["Comparison", "Mean Difference", "Adjusted p-value", "95% CI Lower", "95% CI Upper", "Significant?"]
+        tukey_headers = ["Comparison", "Mean Difference", "Q Statistic", "Adjusted p-value", "95% CI Lower", "95% CI Upper", "Significant?"]
         for col_num, header in enumerate(tukey_headers, 1):
             cell = ws5.cell(row=3, column=col_num, value=header)
             cell.font = font_header
@@ -981,22 +1182,61 @@ def export_excel():
             ws5.cell(row=row_idx, column=1, value=comp_name).font = font_bold
             ws5.cell(row=row_idx, column=2, value=round(r_data.get("meandiff", 0), 4)).alignment = align_right
             
-            p_adj_val = r_data.get("p_adj")
-            ws5.cell(row=row_idx, column=3, value=round(p_adj_val, 4) if isinstance(p_adj_val, (int, float)) else p_adj_val).alignment = align_right
+            q_stat_val = r_data.get("q_stat", 0.0)
+            ws5.cell(row=row_idx, column=3, value=round(q_stat_val, 4) if isinstance(q_stat_val, (int, float)) else q_stat_val).alignment = align_right
             
-            ws5.cell(row=row_idx, column=4, value=round(r_data.get("lower", 0), 4)).alignment = align_right
-            ws5.cell(row=row_idx, column=5, value=round(r_data.get("upper", 0), 4)).alignment = align_right
+            p_adj_val = r_data.get("p_adj")
+            p_adj_formatted = format_p_value(p_adj_val) if p_adj_val is not None and p_adj_val != "N/A" else "N/A"
+            ws5.cell(row=row_idx, column=4, value=p_adj_formatted).alignment = align_right
+            
+            ws5.cell(row=row_idx, column=5, value=round(r_data.get("lower", 0), 4)).alignment = align_right
+            ws5.cell(row=row_idx, column=6, value=round(r_data.get("upper", 0), 4)).alignment = align_right
 
             reject = r_data.get("reject", False)
             sig_text = "Significant" if reject else "Not Significant"
-            ws5.cell(row=row_idx, column=6, value=sig_text).alignment = align_center
+            ws5.cell(row=row_idx, column=7, value=sig_text).alignment = align_center
 
-            for col_num in range(1, 7):
+            for col_num in range(1, 8):
                 cell = ws5.cell(row=row_idx, column=col_num)
                 cell.font = font_bold if col_num == 1 else font_regular
                 cell.border = border_all
-                if col_num == 6 and reject:
+                if col_num == 7 and reject:
                     cell.fill = fill_sig
+
+        # Add Significance Letter Grouping Table
+        tukey_letters = data.get("tukey_letters", {})
+        if tukey_letters:
+            group_means_dict = {}
+            for r_data in summary_stats:
+                g_name = format_group_name(r_data.get("Group"))
+                group_means_dict[g_name] = r_data.get("Mean", 0.0)
+                
+            sorted_groups_for_cld = sorted(list(tukey_letters.keys()), key=lambda g: group_means_dict.get(g, 0.0), reverse=True)
+            
+            start_row_cld = 3 + len(tukey_results) + 3
+            ws5.cell(row=start_row_cld - 1, column=1, value="Significance Letter Groupings (Tukey CLD)").font = font_bold
+            
+            cld_headers = ["Group", "Mean", "Significance Group"]
+            for col_num, header in enumerate(cld_headers, 1):
+                cell = ws5.cell(row=start_row_cld, column=col_num, value=header)
+                cell.font = font_header
+                cell.fill = fill_header
+                cell.alignment = align_center
+                
+            for idx, g_name in enumerate(sorted_groups_for_cld):
+                r_idx = start_row_cld + 1 + idx
+                ws5.cell(row=r_idx, column=1, value=g_name).font = font_bold
+                ws5.cell(row=r_idx, column=2, value=group_means_dict.get(g_name, 0.0)).alignment = align_right
+                
+                c_let = ws5.cell(row=r_idx, column=3, value=tukey_letters.get(g_name, ""))
+                c_let.alignment = align_center
+                c_let.font = Font(name="Arial", size=10, bold=True, color="212529")
+                
+                for col_num in range(1, 4):
+                    cell = ws5.cell(row=r_idx, column=col_num)
+                    cell.border = border_all
+                    if col_num != 3:
+                        cell.font = font_bold if col_num == 1 else font_regular
 
         # Sheet 6: Graph
         ws6 = wb.create_sheet(title="Graph")

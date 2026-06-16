@@ -89,6 +89,128 @@ class TestOneWayANOVA(unittest.TestCase):
         self.assertEqual(len(clean_data), 4)
         self.assertEqual(clean_data, [1.2, 1.8, 1.4, 1.6])
 
+    def test_effect_size_eta_squared(self):
+        # We can calculate F-test and eta_squared manually for g1, g2, g3
+        all_vals = self.g1 + self.g2 + self.g3
+        grand_mean = np.mean(all_vals)
+        ss_total = sum((x - grand_mean)**2 for x in all_vals)
+        ss_between = len(self.g1)*(np.mean(self.g1) - grand_mean)**2 + \
+                     len(self.g2)*(np.mean(self.g2) - grand_mean)**2 + \
+                     len(self.g3)*(np.mean(self.g3) - grand_mean)**2
+                     
+        expected_eta = ss_between / ss_total
+        
+        # Now make an API call or check using the test client
+        from app import app
+        client = app.test_client()
+        response = client.get('/api/one-way?crop=Onion&variable=Root%20Length&day=Day%207&factor=Concentration&biochar_filter=Acrostichum%20aureum')
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        
+        # Verify eta_squared is present and between 0 and 1
+        self.assertIn('eta_squared', data)
+        self.assertIn('eta_interpretation', data)
+        self.assertTrue(0 <= data['eta_squared'] <= 1)
+        # Check interpretation category
+        if data['eta_squared'] >= 0.14:
+            self.assertEqual(data['eta_interpretation'], "Large")
+
+        # Verify p-value display formatting fields exist
+        self.assertIn('p_value_display', data['anova_table']['Between'])
+        self.assertIn('p_value_display', data['shapiro_results'][0])
+        self.assertIn('p_value_display', data['levene_result'])
+        self.assertIn('p_adj_display', data['tukey_results'][0])
+
+    def test_tukey_q_statistic(self):
+        from app import app
+        client = app.test_client()
+        response = client.get('/api/one-way?crop=Onion&variable=Root%20Length&day=Day%207&factor=Concentration&biochar_filter=Acrostichum%20aureum')
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        
+        # Verify that all tukey_results contain q_stat
+        self.assertIn('tukey_results', data)
+        for row in data['tukey_results']:
+            self.assertIn('q_stat', row)
+            self.assertTrue(row['q_stat'] >= 0)
+            
+            # Recalculate manually to verify Q = |mean1 - mean2| / SE_comp
+            g1_name = row['group1']
+            g2_name = row['group2']
+            g1_vals = [pt['Value'] for pt in data['raw_data_points'] if pt['Group'] == g1_name]
+            g2_vals = [pt['Value'] for pt in data['raw_data_points'] if pt['Group'] == g2_name]
+            mean1 = np.mean(g1_vals)
+            mean2 = np.mean(g2_vals)
+            n1 = len(g1_vals)
+            n2 = len(g2_vals)
+            ms_within = data['anova_table']['Within']['MS']
+            
+            se_comparison = np.sqrt((ms_within / 2.0) * ((1.0 / n1) + (1.0 / n2)))
+            expected_q = abs(mean1 - mean2) / se_comparison
+            self.assertAlmostEqual(row['q_stat'], expected_q, places=2)
+
+    def test_cld_letters_correctness(self):
+        from app import app
+        client = app.test_client()
+        response = client.get('/api/one-way?crop=Onion&variable=Root%20Length&day=Day%207&factor=Concentration&biochar_filter=Acrostichum%20aureum')
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        
+        # Verify tukey_letters are present
+        self.assertIn('tukey_letters', data)
+        letters = data['tukey_letters']
+        
+        # Group with the highest mean must have 'a'
+        sorted_stats = sorted(data['summary_stats'], key=lambda s: s['Mean'], reverse=True)
+        from app import format_group_name
+        highest_group_formatted = format_group_name(sorted_stats[0]['Group'])
+        self.assertIn(highest_group_formatted, letters)
+        self.assertTrue(letters[highest_group_formatted].startswith('a'))
+        
+        # Letters must be lowercase strings containing alphabet letters
+        for g, let in letters.items():
+            self.assertTrue(let.islower())
+            self.assertTrue(all('a' <= c <= 'z' for c in let))
+
+    def test_control_response_and_null_state(self):
+        from app import app
+        client = app.test_client()
+        
+        # Case 1: Control group exists (Concentration factor grouped by Biochar)
+        response1 = client.get('/api/one-way?crop=Onion&variable=Root%20Length&day=Day%207&factor=Concentration&biochar_filter=Acrostichum%20aureum')
+        self.assertEqual(response1.status_code, 200)
+        data1 = response1.get_json()
+        self.assertIn('control_response', data1)
+        self.assertIsNotNone(data1['control_response'])
+        self.assertTrue(len(data1['control_response']) > 0)
+        
+        # Check that percent change is calculated correctly and interpretation matches
+        for row in data1['control_response']:
+            self.assertIn('treatment', row)
+            self.assertIn('diff', row)
+            self.assertIn('pct_change', row)
+            self.assertIn('interpretation', row)
+            
+            # Verify interpretation based on pct_change
+            pct = row['pct_change']
+            interp = row['interpretation']
+            if pct <= -10.0:
+                self.assertEqual(interp, "Strong growth inhibition")
+            elif pct < 0.0:
+                self.assertEqual(interp, "Slight growth inhibition")
+            elif pct < 10.0:
+                self.assertEqual(interp, "Slight growth improvement")
+            else:
+                self.assertEqual(interp, "Substantial growth improvement")
+
+        # Case 2: No Control group exists (e.g. Day factor grouped by Biochar and Concentration)
+        response2 = client.get('/api/one-way?crop=Onion&variable=Root%20Length&factor=Day&biochar_filter=Acrostichum%20aureum&concentration_filter=0.5')
+        self.assertEqual(response2.status_code, 200)
+        data2 = response2.get_json()
+        self.assertIn('control_response', data2)
+        # Should be None/null because group names are Day 3, Day 5, Day 7 - no Control.
+        self.assertIsNone(data2['control_response'])
+
 class TestTwoWayANOVA(unittest.TestCase):
     def setUp(self):
         # Create an artificial unbalanced two-way dataset

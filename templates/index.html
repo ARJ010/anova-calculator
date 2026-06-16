@@ -166,7 +166,13 @@
                                     <tbody></tbody>
                                 </table>
                             </div>
-                            <div class="card-footer text-muted" id="anova-inference"></div>
+                            <div class="card-footer text-muted" id="anova-footer">
+                                <div id="anova-inference" class="mb-2"></div>
+                                <div id="eta-squared-container" class="border-top pt-2">
+                                    <strong>Effect Size (&eta;²):</strong> <span id="eta-squared-value"></span> 
+                                    &mdash; <span id="eta-squared-interpretation" class="fw-bold"></span>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- Assumptions Test -->
@@ -236,6 +242,7 @@
                                         <tr>
                                             <th>Comparison</th>
                                             <th>Mean Difference</th>
+                                            <th>Q Statistic</th>
                                             <th>Adjusted p-value</th>
                                             <th>95% CI (Lower, Upper)</th>
                                             <th>Significant?</th>
@@ -243,6 +250,48 @@
                                     </thead>
                                     <tbody></tbody>
                                 </table>
+                            </div>
+                        </div>
+
+                        <!-- Significance Letter Groupings & Control Response Summary -->
+                        <div class="row mb-4">
+                            <!-- Significance Letter Groupings -->
+                            <div class="col-md-6">
+                                <div class="card h-100">
+                                    <div class="card-header bg-light">Significance Letter Groupings (Tukey CLD)</div>
+                                    <div class="card-body p-0 table-responsive">
+                                        <table class="table table-hover table-striped mb-0" id="cld-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Group</th>
+                                                    <th>Mean</th>
+                                                    <th>Significance Group</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Control vs Treatment Response Summary -->
+                            <div class="col-md-6" id="control-response-card" style="display: none;">
+                                <div class="card h-100">
+                                    <div class="card-header bg-light">Control vs Treatment Response Summary</div>
+                                    <div class="card-body p-0 table-responsive">
+                                        <table class="table table-hover table-striped mb-0" id="control-response-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Treatment</th>
+                                                    <th>&Delta; Mean vs Control</th>
+                                                    <th>% Change</th>
+                                                    <th>Interpretation</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody></tbody>
+                                        </table>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 

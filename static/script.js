@@ -125,9 +125,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 biochar,
                 summary_stats: lastOneWayData.summary_stats,
                 anova_table: lastOneWayData.anova_table,
+                eta_squared: lastOneWayData.eta_squared,
+                eta_interpretation: lastOneWayData.eta_interpretation,
                 levene_result: lastOneWayData.levene_result,
                 shapiro_results: lastOneWayData.shapiro_results,
                 tukey_results: lastOneWayData.tukey_results,
+                tukey_letters: lastOneWayData.tukey_letters,
+                control_response: lastOneWayData.control_response,
                 inference_summary: inferenceSummary,
                 chart_image: chartImage
             };
@@ -385,7 +389,7 @@ function renderOneWayResults(data) {
             <td>${between.df}</td>
             <td>${between.MS.toFixed(4)}</td>
             <td>${between.F.toFixed(4)}</td>
-            <td class="fw-bold text-success">${between.p_value.toFixed(4)}</td>
+            <td class="fw-bold text-success">${between.p_value_display}</td>
             <td><span class="badge bg-success">${sigStar}</span></td>
         </tr>
         <tr>
@@ -416,6 +420,10 @@ function renderOneWayResults(data) {
         inferenceDiv.innerHTML = `<strong>Inference Summary:</strong> <span class="text-secondary">Not Statistically Significant (p &ge; 0.05).</span> Fail to reject H<sub>0</sub>. There is no statistically significant difference in mean ${data.variable} across different levels of ${data.factor}.`;
     }
 
+    // Effect Size (eta squared)
+    document.getElementById("eta-squared-value").textContent = data.eta_squared !== undefined ? data.eta_squared.toFixed(4) : "N/A";
+    document.getElementById("eta-squared-interpretation").textContent = data.eta_interpretation !== undefined ? data.eta_interpretation + " treatment effect detected" : "N/A";
+
     // 3. Shapiro-Wilk Table
     const shapiroBody = document.querySelector("#shapiro-table tbody");
     shapiroBody.innerHTML = "";
@@ -423,7 +431,7 @@ function renderOneWayResults(data) {
         const tr = document.createElement("tr");
         const normalText = row.Normal === null ? "N/A" : (row.Normal ? "<span class='text-success fw-bold'>Approximately normal</span>" : "<span class='text-warning fw-bold'>Possible deviation from normality</span>");
         const wStat = row.Statistic !== null ? row.Statistic.toFixed(4) : "-";
-        const pValue = row.p_value !== null ? row.p_value.toFixed(4) : row.Note || "-";
+        const pValue = row.p_value_display || row.Note || "-";
         
         tr.innerHTML = `
             <td><strong>${formatGroupName(row.Group)}</strong></td>
@@ -436,7 +444,7 @@ function renderOneWayResults(data) {
 
     // 4. Levene Test
     document.getElementById("levene-stat").textContent = data.levene_result.Statistic.toFixed(4);
-    document.getElementById("levene-p").textContent = data.levene_result.p_value.toFixed(4);
+    document.getElementById("levene-p").textContent = data.levene_result.p_value_display;
     
     const levAlert = document.getElementById("levene-alert");
     if (data.levene_result.Equal_Variance) {
@@ -456,12 +464,70 @@ function renderOneWayResults(data) {
         tr.innerHTML = `
             <td><strong>${formatGroupName(row.group1)} vs ${formatGroupName(row.group2)}</strong></td>
             <td>${row.meandiff.toFixed(4)}</td>
-            <td class="${row.reject ? 'text-success fw-bold' : ''}">${row.p_adj.toFixed(4)}</td>
+            <td>${(row.q_stat !== undefined && row.q_stat !== null) ? row.q_stat.toFixed(4) : "N/A"}</td>
+            <td class="${row.reject ? 'text-success fw-bold' : ''}">${row.p_adj_display}</td>
             <td>[${row.lower.toFixed(4)}, ${row.upper.toFixed(4)}]</td>
             <td>${sigText}</td>
         `;
         tukeyBody.appendChild(tr);
     });
+
+    // 5b. Significance Letter Groupings (Tukey CLD)
+    const cldBody = document.querySelector("#cld-table tbody");
+    cldBody.innerHTML = "";
+    if (data.tukey_letters) {
+        const sortedGroups = Object.keys(data.tukey_letters).sort((a, b) => {
+            const meanA = data.summary_stats.find(s => formatGroupName(s.Group) === a)?.Mean || 0;
+            const meanB = data.summary_stats.find(s => formatGroupName(s.Group) === b)?.Mean || 0;
+            return meanB - meanA;
+        });
+        
+        sortedGroups.forEach(gName => {
+            const meanVal = data.summary_stats.find(s => formatGroupName(s.Group) === gName)?.Mean || 0;
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td><strong>${gName}</strong></td>
+                <td>${meanVal.toFixed(4)}</td>
+                <td><strong style="color: #212529; font-size: 1.1rem;">${data.tukey_letters[gName]}</strong></td>
+            `;
+            cldBody.appendChild(tr);
+        });
+    }
+
+    // 5c. Control vs Treatment Response Summary
+    const controlCard = document.getElementById("control-response-card");
+    const controlBody = document.querySelector("#control-response-table tbody");
+    controlBody.innerHTML = "";
+    
+    if (data.control_response && data.control_response.length > 0) {
+        controlCard.style.display = "block";
+        data.control_response.forEach(row => {
+            const tr = document.createElement("tr");
+            const pct = row.pct_change;
+            const pctStr = pct >= 0 ? `+${pct.toFixed(1)}%` : `${pct.toFixed(1)}%`;
+            
+            let badgeClass = "text-secondary";
+            if (row.interpretation.toLowerCase().includes("substantial growth improvement")) {
+                badgeClass = "text-success fw-bold";
+            } else if (row.interpretation.toLowerCase().includes("strong growth inhibition")) {
+                badgeClass = "text-danger fw-bold";
+            } else if (row.interpretation.toLowerCase().includes("slight growth inhibition")) {
+                badgeClass = "text-warning fw-bold";
+            } else if (row.interpretation.toLowerCase().includes("slight growth improvement")) {
+                badgeClass = "text-info fw-bold";
+            }
+            
+            tr.innerHTML = `
+                <td><strong>${formatGroupName(row.treatment)}</strong></td>
+                <td>${row.diff >= 0 ? '+' : ''}${row.diff.toFixed(4)}</td>
+                <td><strong>${pctStr}</strong></td>
+                <td><span class="${badgeClass}">${row.interpretation}</span></td>
+            `;
+            controlBody.appendChild(tr);
+        });
+    } else {
+        controlCard.style.display = "none";
+    }
 
     // 6. Exposed Hidden Debug details
     document.getElementById("oneway-debug-panel").textContent = JSON.stringify(data.debug_details, null, 2);
@@ -507,8 +573,7 @@ function drawOneWayScatterPlot(data) {
     const scatterYMin = Math.max(0, overallMin - padding);
     const scatterYMax = overallMax + padding;
     
-    const barPadding = maxMeanWithSE * 0.1 || 1.0;
-    const barYMax = maxMeanWithSE + barPadding;
+    const barYMax = maxMeanWithSE * 1.15 || 1.0;
 
     // Custom error bars plugin (attaches strictly to category centers)
     const errorBarsPlugin = {
@@ -560,6 +625,21 @@ function drawOneWayScatterPlot(data) {
                 ctx.moveTo(canvasX - capWidth, canvasYMax);
                 ctx.lineTo(canvasX + capWidth, canvasYMax);
                 ctx.stroke();
+
+                // Draw Tukey CLD letters if they exist and we are in Publication View
+                if (currentGraphMode === 'pub' && data.tukey_letters) {
+                    const letter = data.tukey_letters[groupName];
+                    if (letter) {
+                        ctx.save();
+                        ctx.font = 'bold 12px sans-serif';
+                        ctx.fillStyle = '#212529'; // Charcoal
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'bottom';
+                        // Draw letter 8 pixels above the top error bar cap
+                        ctx.fillText(letter, canvasX, canvasYMax - 8);
+                        ctx.restore();
+                    }
+                }
             });
             ctx.restore();
          }
