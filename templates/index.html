@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ANOVA Scientific Calculator MVP</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<div class="container-fluid py-4 px-4">
+    <!-- Header -->
+    <div class="row mb-4">
+        <div class="col-12 text-center">
+            <h2 class="fw-bold text-success">ANOVA Scientific Calculator</h2>
+            <p class="text-muted">Botanical & Agricultural Growth Data Analysis Suite</p>
+        </div>
+    </div>
+
+    <!-- Main Grid Layout -->
+    <div class="row">
+        
+        <!-- Global Configuration Sidebar (Left, 4 Columns) -->
+        <div class="col-md-4 col-lg-3">
+            <div class="card">
+                <div class="card-header bg-success text-white fw-bold">1. Data Filters</div>
+                <div class="card-body">
+                    <form id="config-form">
+                        <!-- Crop Selection -->
+                        <div class="mb-3">
+                            <label for="crop" class="form-label">Crop Type</label>
+                            <select class="form-select" id="crop" name="crop" required>
+                                <option value="Onion">Onion</option>
+                                <option value="Pea">Pea</option>
+                            </select>
+                        </div>
+
+                        <!-- Variable Selection -->
+                        <div class="mb-3">
+                            <label for="variable" class="form-label">Dependent Variable</label>
+                            <select class="form-select" id="variable" name="variable" required>
+                                <!-- Populated dynamically -->
+                            </select>
+                        </div>
+
+                        <!-- Day Filter -->
+                        <div class="mb-3" id="filter-day-group">
+                            <label for="day" class="form-label">Measurement Day</label>
+                            <select class="form-select" id="day" name="day" required>
+                                <!-- Populated dynamically -->
+                            </select>
+                        </div>
+
+                        <!-- Biochar Filter -->
+                        <div class="mb-3" id="filter-biochar-group">
+                            <label for="biochar_filter" class="form-label">Biochar Group</label>
+                            <select class="form-select" id="biochar_filter" name="biochar_filter">
+                                <!-- Populated dynamically -->
+                            </select>
+                        </div>
+
+                        <!-- Concentration Filter -->
+                        <div class="mb-3" id="filter-concentration-group">
+                            <label for="concentration_filter" class="form-label">Biochar Concentration</label>
+                            <select class="form-select" id="concentration_filter" name="concentration_filter">
+                                <!-- Populated dynamically -->
+                            </select>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Analysis & Results Column (Right, 8 Columns) -->
+        <div class="col-md-8 col-lg-9">
+            
+            <!-- Tabs Navigation -->
+            <ul class="nav nav-tabs mb-4" id="analysisTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active fw-bold" id="oneway-tab" data-bs-toggle="tab" data-bs-target="#oneway-panel" type="button" role="tab" aria-controls="oneway-panel" aria-selected="true">
+                        One-Way ANOVA
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link fw-bold" id="twoway-tab" data-bs-toggle="tab" data-bs-target="#twoway-panel" type="button" role="tab" aria-controls="twoway-panel" aria-selected="false">
+                        Two-Way ANOVA (Type III)
+                    </button>
+                </li>
+            </ul>
+
+            <!-- Global Error Banner -->
+            <div class="alert alert-danger" id="error-banner" style="display: none;" role="alert"></div>
+
+            <!-- Tab Contents -->
+            <div class="tab-content" id="analysisTabsContent">
+                
+                <!-- ONE-WAY ANOVA OUTPUT PANEL -->
+                <div class="tab-pane fade show active" id="oneway-panel" role="tabpanel" aria-labelledby="oneway-tab">
+                    
+                    <div class="card border-warning mb-4">
+                        <div class="card-header bg-warning-subtle fw-bold text-warning-emphasis">One-Way Run Controls</div>
+                        <div class="card-body">
+                            <div class="row align-items-center">
+                                <div class="col-sm-8">
+                                    <div class="d-flex align-items-center">
+                                        <label for="factor" class="form-label me-3 mb-0 text-nowrap">Grouping Factor (X-Axis):</label>
+                                        <select class="form-select" id="factor" name="factor" required style="max-width: 250px;">
+                                            <option value="Concentration">Concentration</option>
+                                            <option value="Biochar">Biochar</option>
+                                            <option value="Day">Day</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="col-sm-4 text-end">
+                                    <button type="button" id="run-oneway" class="btn btn-success fw-bold w-100">Run One-Way ANOVA</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Result Cards -->
+                    <div id="oneway-results" style="display: none;">
+                        
+                        <!-- Summary Table -->
+                        <div class="card">
+                            <div class="card-header bg-light">Descriptive Statistics</div>
+                            <div class="card-body p-0 table-responsive">
+                                <table class="table table-hover table-striped mb-0" id="summary-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Group</th>
+                                            <th>N</th>
+                                            <th>Sum (&Sigma;X)</th>
+                                            <th>Mean</th>
+                                            <th>Variance</th>
+                                            <th>SD</th>
+                                            <th>Sum Sq (&Sigma;X²)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- ANOVA Table -->
+                        <div class="card">
+                            <div class="card-header bg-light">ANOVA Table (F-Test)</div>
+                            <div class="card-body p-0 table-responsive">
+                                <table class="table table-hover table-striped mb-0" id="anova-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Source of Variation</th>
+                                            <th>SS</th>
+                                            <th>df</th>
+                                            <th>MS</th>
+                                            <th>F-value</th>
+                                            <th>p-value</th>
+                                            <th>Sig.</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                            <div class="card-footer text-muted" id="anova-inference"></div>
+                        </div>
+
+                        <!-- Assumptions Test -->
+                        <div class="row">
+                            <!-- Levene -->
+                            <div class="col-md-6">
+                                <div class="card h-100">
+                                    <div class="card-header bg-light">Homogeneity of Variance (Levene)</div>
+                                    <div class="card-body">
+                                        <p><strong>Levene Statistic:</strong> <span id="levene-stat"></span></p>
+                                        <p><strong>p-value:</strong> <span id="levene-p"></span></p>
+                                        <div class="alert mb-0" id="levene-alert" role="alert"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Shapiro-Wilk -->
+                            <div class="col-md-6">
+                                <div class="card h-100">
+                                    <div class="card-header bg-light">Normality Check (Shapiro-Wilk)</div>
+                                    <div class="card-body p-0 table-responsive">
+                                        <table class="table table-hover table-striped mb-0" id="shapiro-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Group</th>
+                                                    <th>W Stat</th>
+                                                    <th>p-value</th>
+                                                    <th>Normal?</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Boxplot Visualization -->
+                        <div class="card mt-4">
+                            <div class="card-header bg-light">Seedling Growth Distribution Chart</div>
+                            <div class="card-body">
+                                <div style="height: 350px; position: relative;">
+                                    <canvas id="boxplot-canvas"></canvas>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Tukey HSD Table -->
+                        <div class="card">
+                            <div class="card-header bg-light">Post-Hoc Pairwise Comparisons (Tukey HSD)</div>
+                            <div class="card-body p-0 table-responsive">
+                                <table class="table table-hover table-striped mb-0" id="tukey-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Comparison</th>
+                                            <th>Mean Difference</th>
+                                            <th>Adjusted p-value</th>
+                                            <th>95% CI (Lower, Upper)</th>
+                                            <th>Significant?</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- One-Way Debug Panel -->
+                        <div class="card">
+                            <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                                <span>Statistical Debugging Output (One-Way)</span>
+                                <button class="btn btn-sm btn-outline-light" onclick="toggleDebug('oneway')">Toggle Panel</button>
+                            </div>
+                            <div class="card-body" id="oneway-debug-container" style="display: none;">
+                                <pre id="oneway-debug-panel" class="bg-dark text-white p-3 rounded" style="max-height: 350px; overflow-y: auto;"></pre>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- TWO-WAY ANOVA OUTPUT PANEL -->
+                <div class="tab-pane fade" id="twoway-panel" role="tabpanel" aria-labelledby="twoway-tab">
+                    
+                    <div class="card border-success mb-4">
+                        <div class="card-header bg-success-subtle fw-bold text-success-emphasis">Two-Way Run Controls</div>
+                        <div class="card-body">
+                            <div class="row align-items-center">
+                                <div class="col-sm-8">
+                                    <span class="text-muted">Factor A: <strong>Biochar Type</strong> &nbsp;|&nbsp; Factor B: <strong>Concentration</strong></span>
+                                </div>
+                                <div class="col-sm-4 text-end">
+                                    <button type="button" id="run-twoway" class="btn btn-success fw-bold w-100">Run Type III Two-Way ANOVA</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Two-Way Result Cards -->
+                    <div id="twoway-results" style="display: none;">
+                        
+                        <!-- Cell Means Grid -->
+                        <div class="card">
+                            <div class="card-header bg-light">Cell Replication & Means Matrix (Biochar &times; Concentration)</div>
+                            <div class="card-body p-0 table-responsive">
+                                <table class="table table-bordered mb-0" id="twoway-means-table">
+                                    <thead>
+                                        <!-- Header row generated dynamically -->
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Type III ANOVA Table -->
+                        <div class="card">
+                            <div class="card-header bg-light">Type III ANOVA Table (For Unbalanced Designs)</div>
+                            <div class="card-body p-0 table-responsive">
+                                <table class="table table-hover table-striped mb-0" id="twoway-anova-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Source of Variation</th>
+                                            <th>Sum Sq (SS)</th>
+                                            <th>df</th>
+                                            <th>Mean Sq (MS)</th>
+                                            <th>F-value</th>
+                                            <th>p-value</th>
+                                            <th>Sig.</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                            <div class="card-footer text-muted" id="twoway-inference"></div>
+                        </div>
+
+                        <!-- Interaction Plot -->
+                        <div class="card">
+                            <div class="card-header bg-light">Interaction Plot (Dose Response Curves)</div>
+                            <div class="card-body">
+                                <div style="height: 380px; position: relative;">
+                                    <canvas id="interaction-canvas"></canvas>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Post-Hoc (Simple Main Effects) Tukey Table -->
+                        <div class="card" id="twoway-posthoc-card" style="display: none;">
+                            <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                                <span>Simple Main Effects Post-Hoc (Tukey HSD)</span>
+                                <div class="d-flex align-items-center">
+                                    <label for="posthoc-biochar-select" class="form-label mb-0 me-2 text-nowrap" style="font-size: 0.85rem;">View Biochar:</label>
+                                    <select class="form-select form-select-sm" id="posthoc-biochar-select" style="width: 200px;">
+                                        <!-- Options populated dynamically -->
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="card-body p-0 table-responsive">
+                                <table class="table table-hover table-striped mb-0" id="twoway-posthoc-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Comparison (Concentrations)</th>
+                                            <th>Mean Difference</th>
+                                            <th>Adjusted p-value</th>
+                                            <th>95% CI (Lower, Upper)</th>
+                                            <th>Significant?</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                            <div class="card-footer text-muted" style="font-size: 0.85rem;">
+                                <strong>Statistical Notice:</strong> These pairwise comparisons utilize the pooled Error Variance ($MSE_{full}$) and degrees of freedom ($df_{error}$) from the entire Two-Way OLS model, which is mathematically correct for simple main effects.
+                            </div>
+                        </div>
+
+                        <!-- Two-Way Debug Panel -->
+                        <div class="card">
+                            <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                                <span>Statistical Debugging Output (Two-Way)</span>
+                                <button class="btn btn-sm btn-outline-light" onclick="toggleDebug('twoway')">Toggle Panel</button>
+                            </div>
+                            <div class="card-body" id="twoway-debug-container" style="display: none;">
+                                <pre id="twoway-debug-panel" class="bg-dark text-white p-3 rounded" style="max-height: 350px; overflow-y: auto;"></pre>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- Bootstrap Bundle JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
