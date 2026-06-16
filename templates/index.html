@@ -138,6 +138,7 @@
                                             <th>Mean</th>
                                             <th>Variance</th>
                                             <th>SD</th>
+                                            <th>Std. Error (SE)</th>
                                             <th>Sum Sq (&Sigma;X²)</th>
                                         </tr>
                                     </thead>
@@ -204,7 +205,10 @@
 
                         <!-- Boxplot Visualization -->
                         <div class="card mt-4">
-                            <div class="card-header bg-light">Seedling Growth Distribution Chart</div>
+                            <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                                <span>Seedling Growth Distribution Chart</span>
+                                <button type="button" id="download-oneway-chart" class="btn btn-sm btn-outline-success fw-bold">Download Graph (.png)</button>
+                            </div>
                             <div class="card-body">
                                 <div style="height: 350px; position: relative;">
                                     <canvas id="boxplot-canvas"></canvas>
@@ -234,7 +238,7 @@
                         <!-- One-Way Debug Panel -->
                         <div class="card">
                             <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-                                <span>Statistical Debugging Output (One-Way)</span>
+                                <span>Advanced Diagnostics (One-Way)</span>
                                 <button class="btn btn-sm btn-outline-light" onclick="toggleDebug('oneway')">Toggle Panel</button>
                             </div>
                             <div class="card-body" id="oneway-debug-container" style="display: none;">

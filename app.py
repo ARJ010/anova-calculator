@@ -319,6 +319,7 @@ def api_one_way():
         mean = sum_x / n
         var = np.var(vals, ddof=1)
         sd = np.sqrt(var)
+        se = sd / np.sqrt(n) if n > 0 else 0.0
         sum_x2 = sum(x**2 for x in vals)
         
         summary_stats.append({
@@ -328,6 +329,7 @@ def api_one_way():
             "Mean": round(mean, 4),
             "Variance": round(var, 4),
             "SD": round(sd, 4),
+            "SE": round(float(se), 4),
             "SumSq": round(sum_x2, 4)
         })
         

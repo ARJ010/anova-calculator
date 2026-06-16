@@ -21,6 +21,36 @@ document.addEventListener("DOMContentLoaded", () => {
         renderTwoWayPostHocTable(e.target.value);
     });
 
+    // Download chart button listener
+    const downloadBtn = document.getElementById("download-oneway-chart");
+    if (downloadBtn) {
+        downloadBtn.addEventListener("click", () => {
+            if (!activeOneWayChart) return;
+            
+            const crop = document.getElementById("crop").value;
+            const variable = document.getElementById("variable").value.replace(/\s+/g, "");
+            const day = document.getElementById("day").value.replace(/\s+/g, "");
+            
+            let factorSuffix = "";
+            const factor = document.getElementById("factor").value;
+            if (factor === "Concentration") {
+                factorSuffix = document.getElementById("biochar_filter").value.replace(/\s+/g, "");
+            } else if (factor === "Biochar") {
+                const concVal = document.getElementById("concentration_filter").value;
+                factorSuffix = "Conc" + concVal.replace(".", "_");
+            } else {
+                factorSuffix = factor;
+            }
+            
+            const filename = `${crop}_${variable}_${day}_${factorSuffix}.png`;
+            
+            const link = document.createElement('a');
+            link.download = filename;
+            link.href = activeOneWayChart.toBase64Image();
+            link.click();
+        });
+    }
+
     // Handle tab changes to dynamically hide/show sidebar filters
     document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(tabEl => {
         tabEl.addEventListener('shown.bs.tab', event => {
@@ -195,6 +225,7 @@ function renderOneWayResults(data) {
     summaryBody.innerHTML = "";
     data.summary_stats.forEach(row => {
         const tr = document.createElement("tr");
+        const seVal = row.SE !== undefined ? row.SE : (row.SD / Math.sqrt(row.N));
         tr.innerHTML = `
             <td><strong>${row.Group}</strong></td>
             <td>${row.N}</td>
@@ -202,6 +233,7 @@ function renderOneWayResults(data) {
             <td class="table-success fw-bold">${row.Mean.toFixed(4)}</td>
             <td>${row.Variance.toFixed(4)}</td>
             <td>${row.SD.toFixed(4)}</td>
+            <td>${seVal.toFixed(4)}</td>
             <td>${row.SumSq.toFixed(4)}</td>
         `;
         summaryBody.appendChild(tr);
@@ -264,7 +296,7 @@ function renderOneWayResults(data) {
     shapiroBody.innerHTML = "";
     data.shapiro_results.forEach(row => {
         const tr = document.createElement("tr");
-        const normalText = row.Normal === null ? "N/A" : (row.Normal ? "<span class='text-success fw-bold'>Yes</span>" : "<span class='text-danger fw-bold'>No</span>");
+        const normalText = row.Normal === null ? "N/A" : (row.Normal ? "<span class='text-success fw-bold'>Approximately normal</span>" : "<span class='text-warning fw-bold'>Possible deviation from normality</span>");
         const wStat = row.Statistic !== null ? row.Statistic.toFixed(4) : "-";
         const pValue = row.p_value !== null ? row.p_value.toFixed(4) : row.Note || "-";
         
@@ -284,10 +316,10 @@ function renderOneWayResults(data) {
     const levAlert = document.getElementById("levene-alert");
     if (data.levene_result.Equal_Variance) {
         levAlert.className = "alert alert-success mb-0 py-2";
-        levAlert.innerHTML = `<strong>Assumption Met:</strong> Variance homogeneity satisfied (p &ge; 0.05). Standard ANOVA calculations are scientifically valid.`;
+        levAlert.innerHTML = `<strong>Homogeneity of variance assumption satisfied.</strong><br><br><small><strong>Interpretation:</strong><br>Variances appear sufficiently equal across treatment groups. Standard ANOVA assumptions are met.</small>`;
     } else {
         levAlert.className = "alert alert-warning mb-0 py-2";
-        levAlert.innerHTML = `<strong>Assumption Violated:</strong> Heteroscedasticity detected (p < 0.05). Variances are unequal. Standard ANOVA robustness is reduced.`;
+        levAlert.innerHTML = `<strong>Homogeneity of variance assumption may be violated.</strong><br><br><small><strong>Interpretation:</strong><br>Group variances differ significantly. ANOVA is generally robust to moderate variance differences when group sizes are equal, but results should be interpreted cautiously.</small>`;
     }
 
     // 5. Tukey HSD Table
@@ -323,7 +355,6 @@ function drawOneWayScatterPlot(data) {
     }
 
     const ctx = document.getElementById("boxplot-canvas").getContext("2d");
-    
     const groupNames = data.summary_stats.map(s => s.Group);
     
     // Prepare replicates dataset (with jitter)
@@ -343,6 +374,60 @@ function drawOneWayScatterPlot(data) {
         y: s.Mean
     }));
 
+    // Axis label mapping
+    let xAxisLabel = data.factor;
+    if (data.factor === "Concentration") xAxisLabel = "Biochar Concentration (g/L)";
+    else if (data.factor === "Biochar") xAxisLabel = "Biochar Type";
+    else if (data.factor === "Day") xAxisLabel = "Measurement Day";
+
+    // Custom error bars plugin (attaches strictly to category centers and mean points)
+    const errorBarsPlugin = {
+        id: 'errorBars',
+        afterDatasetsDraw(chart) {
+            const { ctx, scales: { x, y } } = chart;
+            const meanMeta = chart.getDatasetMeta(1);
+            const meanDataset = chart.data.datasets[1];
+            if (!meanDataset || !meanMeta || !meanMeta.data) return;
+
+            ctx.save();
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#212529'; // Dark charcoal matching mean marker
+
+            meanMeta.data.forEach((point, index) => {
+                const meanVal = meanDataset.data[index].y;
+                const groupName = groupNames[index];
+                const stat = data.summary_stats.find(s => s.Group === groupName);
+                if (!stat) return;
+
+                const se = stat.SE !== undefined ? stat.SE : 0;
+                if (se <= 0) return; // Skip if zero-variance / zero SE
+
+                const yMin = meanVal - se;
+                const yMax = meanVal + se;
+
+                const canvasX = point.x;
+                const canvasYMin = y.getPixelForValue(yMin);
+                const canvasYMax = y.getPixelForValue(yMax);
+
+                // Draw vertical error bar line
+                ctx.beginPath();
+                ctx.moveTo(canvasX, canvasYMin);
+                ctx.lineTo(canvasX, canvasYMax);
+                ctx.stroke();
+
+                // Draw horizontal caps
+                const capWidth = 6;
+                ctx.beginPath();
+                ctx.moveTo(canvasX - capWidth, canvasYMin);
+                ctx.lineTo(canvasX + capWidth, canvasYMin);
+                ctx.moveTo(canvasX - capWidth, canvasYMax);
+                ctx.lineTo(canvasX + capWidth, canvasYMax);
+                ctx.stroke();
+            });
+            ctx.restore();
+         }
+    };
+
     activeOneWayChart = new Chart(ctx, {
         type: 'scatter',
         data: {
@@ -350,8 +435,8 @@ function drawOneWayScatterPlot(data) {
                 {
                     label: 'Replicate Observations',
                     data: scatterPoints,
-                    backgroundColor: 'rgba(25, 135, 84, 0.4)',
-                    borderColor: 'rgba(25, 135, 84, 0.7)',
+                    backgroundColor: 'rgba(33, 115, 70, 0.3)', // lightly transparent forest green
+                    borderColor: 'rgba(33, 115, 70, 0.6)',
                     borderWidth: 1,
                     pointRadius: 6,
                     pointHoverRadius: 8
@@ -359,12 +444,12 @@ function drawOneWayScatterPlot(data) {
                 {
                     label: 'Group Mean',
                     data: meanPoints,
-                    backgroundColor: '#d9480f',
-                    borderColor: '#b23b07',
+                    backgroundColor: '#212529', // dark charcoal mean marker
+                    borderColor: '#212529',
                     borderWidth: 2,
-                    pointRadius: 10,
-                    pointStyle: 'rectRot',
-                    pointHoverRadius: 12
+                    pointRadius: 9,
+                    pointStyle: 'rectRot', // rotated square (diamond)
+                    pointHoverRadius: 11
                 }
             ]
         },
@@ -377,7 +462,7 @@ function drawOneWayScatterPlot(data) {
                     position: 'bottom',
                     title: {
                         display: true,
-                        text: 'Grouping Levels (' + data.factor + ')'
+                        text: xAxisLabel
                     },
                     ticks: {
                         stepSize: 1,
@@ -411,7 +496,8 @@ function drawOneWayScatterPlot(data) {
                     }
                 }
             }
-        }
+        },
+        plugins: [errorBarsPlugin]
     });
 }
 
