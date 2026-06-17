@@ -244,6 +244,21 @@ def format_p_value(p):
             return "< 0.0001 (<1e-16)"
         return f"< 0.0001 ({formatted_sci})"
 
+def validate_alpha(alpha_param):
+    """
+    Validates alpha value. Allowed values are 0.001, 0.01, 0.05.
+    Silently falls back to 0.05 on any invalid value.
+    """
+    try:
+        alpha = float(alpha_param)
+    except (TypeError, ValueError):
+        return 0.05
+    allowed_alphas = [0.001, 0.01, 0.05]
+    for a in allowed_alphas:
+        if abs(alpha - a) < 1e-6:
+            return a
+    return 0.05
+
 def get_compact_letter_display(groups, tukey_results, group_means):
     """
     groups: list of group names (strings)
@@ -324,6 +339,9 @@ def api_one_way():
     
     conc_filter_val = data.get("concentration_filter")
     concentration_filter = float(conc_filter_val) if conc_filter_val is not None and is_numeric(conc_filter_val) else None
+
+    # Parse and validate alpha (nominal significance level)
+    alpha = validate_alpha(data.get("alpha", "0.05"))
 
     # Filter master dataframe
     df_filtered = FLAT_DF.copy()
@@ -452,7 +470,7 @@ def api_one_way():
                 "Statistic": round(sh_stat, 4),
                 "p_value": round(sh_p, 4),
                 "p_value_display": format_p_value(sh_p),
-                "Normal": bool(sh_p >= 0.05)
+                "Normal": bool(sh_p >= alpha)
             })
         else:
             shapiro_results.append({
@@ -470,7 +488,7 @@ def api_one_way():
         "Statistic": round(lev_stat, 4),
         "p_value": round(lev_p, 4),
         "p_value_display": format_p_value(lev_p),
-        "Equal_Variance": bool(lev_p >= 0.05)
+        "Equal_Variance": bool(lev_p >= alpha)
     }
 
     # 4. Standard One-Way ANOVA
@@ -508,7 +526,7 @@ def api_one_way():
             "SS": round(ss_total, 4),
             "df": df_total
         },
-        "Significant": bool(f_p < 0.05)
+        "Significant": bool(f_p < alpha)
     }
 
     # Calculate Effect Size (eta squared)
@@ -523,7 +541,7 @@ def api_one_way():
         eta_interpretation = "Large"
 
     # 5. Tukey HSD Post-hoc Test
-    tukey_res = mc.pairwise_tukeyhsd(np.array(all_values), np.array(all_group_labels), alpha=0.05)
+    tukey_res = mc.pairwise_tukeyhsd(np.array(all_values), np.array(all_group_labels), alpha=alpha)
     tukey_table = []
     
     for row in tukey_res._results_table.data[1:]:
@@ -629,6 +647,7 @@ def api_one_way():
         "tukey_letters": tukey_letters,
         "control_response": control_response if control_group_name is not None else None,
         "raw_data_points": raw_data_points,
+        "alpha": alpha,
         "debug_details": debug_details
     }
     
@@ -646,6 +665,9 @@ def api_two_way():
     crop = data.get("crop")
     variable = data.get("variable")
     day = data.get("day")
+
+    # Parse and validate alpha (nominal significance level)
+    alpha = validate_alpha(data.get("alpha", "0.05"))
 
     # Filter master dataframe
     df_filtered = FLAT_DF.copy()
@@ -734,7 +756,7 @@ def api_two_way():
     
     # Interaction significance
     p_val_AB = anova_table.loc["C(Biochar, Sum):C(Concentration, Sum)", "PR(>F)"]
-    interaction_significant = bool(p_val_AB < 0.05) if not pd.isna(p_val_AB) else False
+    interaction_significant = bool(p_val_AB < alpha) if not pd.isna(p_val_AB) else False
 
     # 2. Cell Means Grid calculation (Biochar x Concentration)
     cell_means = []
@@ -775,7 +797,7 @@ def api_two_way():
         c_levels = len(concs_b)
         
         # Calculate critical Q-value using studentized range
-        q_crit = stats.studentized_range.ppf(0.95, c_levels, df_err)
+        q_crit = stats.studentized_range.ppf(1.0 - alpha, c_levels, df_err)
         
         # Perform pairwise comparisons
         for i in range(len(concs_b)):
@@ -807,7 +829,7 @@ def api_two_way():
                     ci_half = q_crit * se
                     lower = meandiff - ci_half
                     upper = meandiff + ci_half
-                    reject = bool(p_adj < 0.05)
+                    reject = bool(p_adj < alpha)
                     
                     posthoc_results[b].append({
                         "group1": f"{c1} g/L" if c1 > 0 else "Control",
@@ -869,6 +891,7 @@ def api_two_way():
         "cell_means": cell_means,
         "posthoc_results": posthoc_results,
         "interaction_plot_data": interaction_plot_data,
+        "alpha": alpha,
         "debug_details": debug_details
     }
     
@@ -892,6 +915,7 @@ def export_excel():
         day = data.get("day", "N/A")
         factor = data.get("factor", "N/A")
         biochar = data.get("biochar", "N/A")
+        alpha_val = validate_alpha(data.get("alpha", 0.05))
 
         summary_stats = data.get("summary_stats", [])
         anova_table = data.get("anova_table", {})
@@ -969,7 +993,7 @@ def export_excel():
             ("Biochar Group", biochar),
             ("F-statistic", f_stat),
             ("p-value", p_val_display),
-            ("Significant (p < 0.05)", "Yes" if significant else "No"),
+            (f"Significant (p < {alpha_val})", "Yes" if significant else "No"),
             ("Effect Size (Eta Squared)", eta_squared),
             ("Effect Size Interpretation", eta_interpretation)
         ]
@@ -981,6 +1005,34 @@ def export_excel():
             c_f.fill = fill_light
 
             c_v = ws1.cell(row=row_idx, column=2, value=val)
+            c_v.font = font_regular
+            c_v.border = border_all
+            c_v.alignment = align_left
+
+        # Analysis Settings block
+        ws1.merge_cells(start_row=3, start_column=4, end_row=3, end_column=5)
+        c_set_title = ws1.cell(row=3, column=4, value="Analysis Settings")
+        c_set_title.font = font_header
+        c_set_title.fill = fill_header
+        c_set_title.alignment = align_center
+
+        ws1.cell(row=3, column=5).border = border_all
+        c_set_title.border = border_all
+
+        settings_data = [
+            ("Significance Level (α)", alpha_val),
+            ("Test", "One-Way ANOVA"),
+            ("Post Hoc", "Tukey HSD")
+        ]
+
+        for idx, (field, val) in enumerate(settings_data):
+            row_idx = 4 + idx
+            c_f = ws1.cell(row=row_idx, column=4, value=field)
+            c_f.font = font_bold
+            c_f.border = border_all
+            c_f.fill = fill_light
+
+            c_v = ws1.cell(row=row_idx, column=5, value=val)
             c_v.font = font_regular
             c_v.border = border_all
             c_v.alignment = align_left

@@ -70,6 +70,16 @@
                                 <!-- Populated dynamically -->
                             </select>
                         </div>
+
+                        <!-- Significance Level (alpha) -->
+                        <div class="mb-3">
+                            <label for="alpha" class="form-label">Significance Level (&alpha;)</label>
+                            <select class="form-select" id="alpha" name="alpha" required>
+                                <option value="0.001">0.001</option>
+                                <option value="0.01">0.01</option>
+                                <option value="0.05" selected>0.05 (Default)</option>
+                            </select>
+                        </div>
                     </form>
                 </div>
             </div>
@@ -171,6 +181,9 @@
                                 <div id="eta-squared-container" class="border-top pt-2">
                                     <strong>Effect Size (&eta;²):</strong> <span id="eta-squared-value"></span> 
                                     &mdash; <span id="eta-squared-interpretation" class="fw-bold"></span>
+                                </div>
+                                <div id="anova-alpha-container" class="border-top pt-2 text-secondary" style="font-size: 0.85rem;">
+                                    <span id="anova-alpha-label"></span>
                                 </div>
                             </div>
                         </div>
@@ -361,7 +374,12 @@
                                     <tbody></tbody>
                                 </table>
                             </div>
-                            <div class="card-footer text-muted" id="twoway-inference"></div>
+                            <div class="card-footer text-muted">
+                                <div id="twoway-inference" class="mb-2"></div>
+                                <div id="twoway-alpha-container" class="border-top pt-2 text-secondary" style="font-size: 0.85rem;">
+                                    <span id="twoway-alpha-label"></span>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- Interaction Plot -->

@@ -328,6 +328,67 @@ class TestAPIRoutes(unittest.TestCase):
         except Exception as zip_err:
             self.fail(f"Exported Excel file is not a valid zip archive: {str(zip_err)}")
 
+    def test_configurable_alpha_oneway(self):
+        # 1. Test default alpha
+        resp_def = self.client.get('/api/one-way?crop=Onion&variable=Root%20Length&day=Day%207&factor=Concentration&biochar_filter=Acrostichum%20aureum')
+        self.assertEqual(resp_def.status_code, 200)
+        data_def = resp_def.get_json()
+        self.assertEqual(data_def['alpha'], 0.05)
+
+        # 2. Test valid alpha values
+        for a in [0.001, 0.01, 0.05]:
+            resp = self.client.get(f'/api/one-way?crop=Onion&variable=Root%20Length&day=Day%207&factor=Concentration&biochar_filter=Acrostichum%20aureum&alpha={a}')
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertEqual(data['alpha'], a)
+            
+            # F-statistic and raw p-values must remain identical to default
+            self.assertEqual(data['anova_table']['Between']['F'], data_def['anova_table']['Between']['F'])
+            self.assertEqual(data['anova_table']['Between']['p_value'], data_def['anova_table']['Between']['p_value'])
+
+        # 3. Test invalid alpha falls back to 0.05
+        resp_inv = self.client.get('/api/one-way?crop=Onion&variable=Root%20Length&day=Day%207&factor=Concentration&biochar_filter=Acrostichum%20aureum&alpha=0.25')
+        self.assertEqual(resp_inv.status_code, 200)
+        data_inv = resp_inv.get_json()
+        self.assertEqual(data_inv['alpha'], 0.05)
+
+        # 4. Test that 0.10 is now rejected and falls back to 0.05
+        resp_10 = self.client.get('/api/one-way?crop=Onion&variable=Root%20Length&day=Day%207&factor=Concentration&biochar_filter=Acrostichum%20aureum&alpha=0.10')
+        self.assertEqual(resp_10.status_code, 200)
+        data_10 = resp_10.get_json()
+        self.assertEqual(data_10['alpha'], 0.05)
+
+    def test_configurable_alpha_twoway(self):
+        # 1. Test default alpha
+        resp_def = self.client.get('/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207')
+        self.assertEqual(resp_def.status_code, 200)
+        data_def = resp_def.get_json()
+        self.assertEqual(data_def['alpha'], 0.05)
+
+        # 2. Test valid alpha values
+        for a in [0.001, 0.01, 0.05]:
+            resp = self.client.get(f'/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207&alpha={a}')
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertEqual(data['alpha'], a)
+            
+            # F-value and raw p-value must remain identical
+            row_key = "C(Biochar, Sum):C(Concentration, Sum)"
+            self.assertEqual(data['anova_table'][row_key]['F'], data_def['anova_table'][row_key]['F'])
+            self.assertEqual(data['anova_table'][row_key]['p_value'], data_def['anova_table'][row_key]['p_value'])
+
+        # 3. Test invalid alpha falls back to 0.05
+        resp_inv = self.client.get('/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207&alpha=invalid')
+        self.assertEqual(resp_inv.status_code, 200)
+        data_inv = resp_inv.get_json()
+        self.assertEqual(data_inv['alpha'], 0.05)
+
+        # 4. Test that 0.10 is now rejected and falls back to 0.05
+        resp_10 = self.client.get('/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207&alpha=0.10')
+        self.assertEqual(resp_10.status_code, 200)
+        data_10 = resp_10.get_json()
+        self.assertEqual(data_10['alpha'], 0.05)
+
 if __name__ == "__main__":
     unittest.main()
 

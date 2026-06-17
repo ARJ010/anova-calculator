@@ -110,11 +110,12 @@ document.addEventListener("DOMContentLoaded", () => {
             
             // Build statistical interpretation text same as UI
             const isSignificant = lastOneWayData.anova_table.Significant;
+            const alpha_val = lastOneWayData.alpha || 0.05;
             let inferenceSummary = "";
             if (isSignificant) {
-                inferenceSummary = `Statistically Significant (p < 0.05). Reject null hypothesis H0. There is a statistically significant difference in mean ${lastOneWayData.variable} across different levels of ${lastOneWayData.factor}. Tukey HSD post-hoc test comparisons are valid.`;
+                inferenceSummary = `Statistically Significant (p < ${alpha_val}). Reject null hypothesis H0. There is a statistically significant difference in mean ${lastOneWayData.variable} across different levels of ${lastOneWayData.factor}. Tukey HSD post-hoc test comparisons are valid.`;
             } else {
-                inferenceSummary = `Not Statistically Significant (p >= 0.05). Fail to reject H0. There is no statistically significant difference in mean ${lastOneWayData.variable} across different levels of ${lastOneWayData.factor}.`;
+                inferenceSummary = `Not Statistically Significant (p >= ${alpha_val}). Fail to reject H0. There is no statistically significant difference in mean ${lastOneWayData.variable} across different levels of ${lastOneWayData.factor}.`;
             }
             
             const payload = {
@@ -123,6 +124,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 day,
                 factor,
                 biochar,
+                alpha: alpha_val,
                 summary_stats: lastOneWayData.summary_stats,
                 anova_table: lastOneWayData.anova_table,
                 eta_squared: lastOneWayData.eta_squared,
@@ -309,6 +311,7 @@ function handleOneWayRun() {
     const factor = document.getElementById("factor").value;
     const biochar_filter = document.getElementById("biochar_filter").value;
     const concentration_filter = document.getElementById("concentration_filter").value;
+    const alpha = document.getElementById("alpha").value;
 
     const params = new URLSearchParams({
         crop,
@@ -316,7 +319,8 @@ function handleOneWayRun() {
         day,
         factor,
         biochar_filter,
-        concentration_filter
+        concentration_filter,
+        alpha
     });
 
     const runBtn = document.getElementById("run-oneway");
@@ -413,11 +417,18 @@ function renderOneWayResults(data) {
     `;
 
     // ANOVA Inference summary
+    const alpha_val = data.alpha || 0.05;
     const inferenceDiv = document.getElementById("anova-inference");
     if (data.anova_table.Significant) {
-        inferenceDiv.innerHTML = `<strong>Inference Summary:</strong> <span class="text-danger fw-bold">Statistically Significant (p < 0.05).</span> Reject null hypothesis H<sub>0</sub>. There is a statistically significant difference in mean ${data.variable} across different levels of ${data.factor}. Tukey HSD post-hoc test comparisons are valid.`;
+        inferenceDiv.innerHTML = `<strong>Inference Summary:</strong> <span class="text-danger fw-bold">Statistically Significant (p < ${alpha_val}).</span> Reject null hypothesis H<sub>0</sub>. There is a statistically significant difference in mean ${data.variable} across different levels of ${data.factor}. Tukey HSD post-hoc test comparisons are valid.`;
     } else {
-        inferenceDiv.innerHTML = `<strong>Inference Summary:</strong> <span class="text-secondary">Not Statistically Significant (p &ge; 0.05).</span> Fail to reject H<sub>0</sub>. There is no statistically significant difference in mean ${data.variable} across different levels of ${data.factor}.`;
+        inferenceDiv.innerHTML = `<strong>Inference Summary:</strong> <span class="text-secondary">Not Statistically Significant (p &ge; ${alpha_val}).</span> Fail to reject H<sub>0</sub>. There is no statistically significant difference in mean ${data.variable} across different levels of ${data.factor}.`;
+    }
+
+    // Render active alpha label
+    const alphaLabel = document.getElementById("anova-alpha-label");
+    if (alphaLabel) {
+        alphaLabel.textContent = `Statistical hypothesis-test decisions evaluated at α = ${alpha_val}`;
     }
 
     // Effect Size (eta squared)
@@ -888,11 +899,13 @@ function handleTwoWayRun() {
     const crop = document.getElementById("crop").value;
     const variable = document.getElementById("variable").value;
     const day = document.getElementById("day").value;
+    const alpha = document.getElementById("alpha").value;
 
     const params = new URLSearchParams({
         crop,
         variable,
-        day
+        day,
+        alpha
     });
 
     const runBtn = document.getElementById("run-twoway");
@@ -1042,9 +1055,10 @@ function renderTwoWayResults(data) {
     const p_B = data.anova_table["C(Concentration, Sum)"]?.p_value;
     const p_AB = data.anova_table["C(Biochar, Sum):C(Concentration, Sum)"]?.p_value;
 
-    const sigA = p_A !== undefined && p_A < 0.05;
-    const sigB = p_B !== undefined && p_B < 0.05;
-    const sigAB = p_AB !== undefined && p_AB < 0.05;
+    const alpha_val = data.alpha || 0.05;
+    const sigA = p_A !== undefined && p_A < alpha_val;
+    const sigB = p_B !== undefined && p_B < alpha_val;
+    const sigAB = p_AB !== undefined && p_AB < alpha_val;
 
     let inferenceHtml = `<strong>Inference Summary:</strong><ul class="mb-0 mt-1">`;
     inferenceHtml += `<li><strong>Factor A (Biochar):</strong> ${sigA ? `<span class="text-success fw-bold">Significant (p = ${p_A.toFixed(4)})</span>. Biochar types differ in their general effect.` : `<span class="text-muted">Not Significant (p = ${p_A.toFixed(4)})</span>.`}</li>`;
@@ -1055,7 +1069,7 @@ function renderTwoWayResults(data) {
     if (sigAB) {
         inferenceHtml += `
             <div class="alert alert-warning mt-3 mb-0 py-2" style="font-size: 0.85rem;">
-                <strong>Scientific Interpretation Rule:</strong> Because the interaction effect is statistically significant (p < 0.05), you <strong>cannot</strong> interpret the main effects of Biochar or Concentration directly. Focus instead on the **Simple Main Effects** post-hoc Tukey comparisons shown below.
+                <strong>Scientific Interpretation Rule:</strong> Because the interaction effect is statistically significant (p < ${alpha_val}), you <strong>cannot</strong> interpret the main effects of Biochar or Concentration directly. Focus instead on the **Simple Main Effects** post-hoc Tukey comparisons shown below.
             </div>
         `;
     } else {
@@ -1066,6 +1080,12 @@ function renderTwoWayResults(data) {
         `;
     }
     inferenceDiv.innerHTML = inferenceHtml;
+
+    // Render active alpha label
+    const twowayAlphaLabel = document.getElementById("twoway-alpha-label");
+    if (twowayAlphaLabel) {
+        twowayAlphaLabel.textContent = `Statistical hypothesis-test decisions evaluated at α = ${alpha_val}`;
+    }
 
     // 4. Plot Interaction Line Chart
     drawTwoWayInteractionPlot(data);
