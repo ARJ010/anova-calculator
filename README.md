@@ -1,6 +1,6 @@
-# Botanical & Agricultural ANOVA Scientific Calculator
+# Botanical & Agricultural ANOVA Scientific Calculator (v1.6.1)
 
-A statistically rigorous, research-grade web calculator built specifically for analyzing botanical and agricultural seedling growth experiments. It supports standard **One-Way ANOVA** and **Type III Two-Way ANOVA** calculations directly from flattened experimental sheets, properly managing control-treatment imbalances and zero-growth outliers.
+A statistically rigorous, research-grade web calculator built specifically for analyzing botanical and agricultural seedling growth experiments. It supports standard **One-Way ANOVA** and **Type III Two-Way ANOVA** calculations directly from flattened experimental sheets, properly managing control-treatment imbalances, configurable significance levels, and zero-growth outliers.
 
 ---
 
@@ -15,18 +15,27 @@ This calculator is designed to provide PG-level agricultural researchers with a 
 ## ✨ Features
 
 - **Data Pipeline**: Automatically parses and flattens structured multi-sheet agricultural Excel workbooks into a clean database format on startup.
+- **Configurable Significance Level (α)**:
+  * Supports selecting nominal significance levels $\alpha \in \{0.001, 0.01, 0.05\}$ from the sidebar.
+  * Dynamically propagates the chosen $\alpha$ consistently across all hypothesis-test decisions (Shapiro-Wilk normality, Levene's homogeneity of variance, overall ANOVA F-test, Tukey HSD reject decisions, and Simple Main Effects Tukey).
+  * Shifting $\alpha$ dynamically updates Tukey HSD confidence intervals (margin of error) and Compact Letter Display (CLD) groupings.
 - **One-Way ANOVA**:
-  - Computes standard F-ANOVA table (SS, df, MS, F-value, and p-value).
-  - Validates assumptions using **Shapiro-Wilk** (normality of residuals) and **Levene's Test** (homogeneity of variances).
-  - Performs **Tukey HSD** post-hoc pairwise comparisons.
-  - Interactive scatter plot rendering with randomized horizontal jitter for individual replicate observations.
+  * Computes standard F-ANOVA table (SS, df, MS, F-value, and p-value).
+  * Validates assumptions using **Shapiro-Wilk** (normality of residuals) and **Levene's Test** (homogeneity of variances).
+  * Performs **Tukey HSD** post-hoc pairwise comparisons with dynamic confidence boundaries.
+  * Calculates **Compact Letter Display (CLD)** to group treatments.
+  * Interactive scatter plot rendering with randomized horizontal jitter for individual replicate observations.
 - **Type III Two-Way ANOVA (Factor A: Biochar Type × Factor B: Concentration)**:
-  - Specifically designed for unbalanced experimental designs (e.g., $N=20$ shared control replicates vs. $N=10$ treatment replicates).
-  - Utilizes **Sum contrast coding** (`C(factor, Sum)`) to ensure correct Type III Sums of Squares computation.
-  - Automatically builds a **Cell Replication & Means Matrix**.
-  - Renders **Dose-Response Interaction Curves** (parallelism check).
-  - Performs **Simple Main Effects Tukey HSD** comparing concentration levels within individual biochars using the full-model error term ($MSE_{full}$ and $df_{error}$) to maintain statistical power.
+  * Specifically designed for unbalanced experimental designs (e.g., $N=20$ shared control replicates vs. $N=10$ treatment replicates).
+  * Utilizes **Sum contrast coding** (`C(factor, Sum)`) to ensure correct Type III Sums of Squares computation.
+  * Automatically builds a **Cell Replication & Means Matrix**.
+  * Renders **Dose-Response Interaction Curves** (parallelism check).
+  * Performs **Simple Main Effects Tukey HSD** comparing concentration levels within individual biochars using the full-model error term ($MSE_{full}$ and $df_{error}$) to maintain statistical power.
 - **Zero-Variance Protection**: Detects "fail-to-grow" treatment groups (zero variance) and introduces a tiny positive variance adjustment ($\epsilon = 10^{-6}$ to the first replicate) to prevent library crashes in Levene's and Tukey's tests without biasing mean outputs.
+- **Excel Export Report**:
+  * Merges Descriptive stats, ANOVA table, and Tukey results.
+  * Includes a dedicated **Analysis Settings** block logging the provenance of the active analysis (selected significance level, test type, and post-hoc method).
+  * Labels statistical significance dynamically based on the active $\alpha$ level (e.g. `Significant (p < 0.01)`).
 - **User Interface**: Built on standard Bootstrap 5 with dynamic sidebar filters and detailed dark-themed statistical debug logs.
 
 ---
@@ -47,7 +56,7 @@ anova-calculator/
 ├── templates/
 │   └── index.html              # UI Layout
 ├── tests/
-│   └── statistical_tests.py    # Unit & Integration Tests (10 test cases)
+│   └── statistical_tests.py    # Unit & Integration Tests (17 test cases)
 └── README.md                   # Documentation
 ```
 
@@ -79,9 +88,9 @@ pip install -r requirements.txt
 ### Step 4: Run Automated Tests
 Verify statistical correctness in your environment:
 ```bash
-python3 tests/statistical_tests.py
+python3 -m unittest tests/statistical_tests.py
 ```
-*(All 10 tests should return `OK`)*
+*(All 17 tests should return `OK`)*
 
 ### Step 5: Start Local Server
 ```bash
@@ -99,7 +108,11 @@ Open [http://127.0.0.1:5000](http://127.0.0.1:5000) in your web browser.
 2. **Simple Main Effects Standard Error**: Under the Two-Way model, the standard error for pairwise Tukey comparisons is computed as:
    $$SE = \sqrt{\frac{MSE_{full}}{2} \left(\frac{1}{n_1} + \frac{1}{n_2}\right)}$$
    where $MSE_{full}$ is the pooled Mean Square Error of the full OLS model, and $n_1, n_2$ are the sample sizes of the compared groups. Adjusted p-values are obtained using the Studentized Range survival function `scipy.stats.studentized_range.sf(q, c, df_err)`.
-3. **Scientific Interpretation Rule**: If the interaction term (Biochar &times; Concentration) is statistically significant ($p < 0.05$), global main effects are confounded. The interface warns users to bypass main effects and interpret Simple Main Effects comparisons instead.
+3. **Nominal Significance Level (α)**:
+   * **Scope of $\alpha$**: Shifting $\alpha$ changes the rejection boundaries for statistical hypothesis tests, pairwise post-hoc test results, Tukey confidence interval margins of error, and CLD group letter listings.
+   * **Invariance of Data**: Core descriptive metrics (sample size $N$, Means, Standard Deviations, Variances), raw p-values, and F-statistics are completely independent of $\alpha$.
+   * **Invariant Significance Stars**: Standard publication significance stars are fixed to standard international scientific publication conventions ($p < 0.05 \rightarrow *$, $p < 0.01 \rightarrow **$, $p < 0.001 \rightarrow ***$, otherwise $\rightarrow$ ns) and are not affected by changes in $\alpha$.
+4. **Scientific Interpretation Rule**: If the interaction term (Biochar &times; Concentration) is statistically significant ($p < \alpha$), global main effects are confounded. The interface warns users to bypass main effects and interpret Simple Main Effects comparisons instead.
 
 ---
 
