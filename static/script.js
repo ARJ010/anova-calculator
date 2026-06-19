@@ -55,7 +55,7 @@ document.addEventListener("DOMContentLoaded", () => {
             currentGraphMode = e.target.id === 'mode-pub' ? 'pub' : 'dist';
             const themeContainer = document.getElementById("chart-theme-container");
             if (themeContainer) {
-                themeContainer.style.display = currentGraphMode === 'pub' ? 'block' : 'none';
+                themeContainer.style.display = currentGraphMode === 'pub' ? 'flex' : 'none';
             }
             if (lastOneWayData) {
                 drawOneWayScatterPlot(lastOneWayData);
@@ -63,10 +63,10 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     });
 
-    // Listen to changes in chart theme
-    const themeSelect = document.getElementById("chart-theme");
-    if (themeSelect) {
-        themeSelect.addEventListener("change", () => {
+    // Listen to changes in chart color picker
+    const colorPicker = document.getElementById("chart-color");
+    if (colorPicker) {
+        colorPicker.addEventListener("input", () => {
             if (lastOneWayData && currentGraphMode === 'pub') {
                 drawOneWayScatterPlot(lastOneWayData);
             }
@@ -674,32 +674,17 @@ function drawOneWayScatterPlot(data) {
         // Mode 2: Publication View (Bar Chart with Mean + SE)
         const meanValues = data.summary_stats.map(s => s.Mean);
 
-        // Curated modern academic themes mapping
-        const themes = {
-            slate: {
-                bg: 'rgba(74, 85, 104, 0.8)',
-                border: 'rgba(45, 55, 72, 1)'
-            },
-            sage: {
-                bg: 'rgba(76, 133, 90, 0.8)',
-                border: 'rgba(44, 79, 53, 1)'
-            },
-            teal: {
-                bg: 'rgba(40, 140, 137, 0.8)',
-                border: 'rgba(20, 80, 78, 1)'
-            },
-            terracotta: {
-                bg: 'rgba(210, 105, 80, 0.8)',
-                border: 'rgba(130, 50, 35, 1)'
-            },
-            indigo: {
-                bg: 'rgba(99, 102, 241, 0.8)',
-                border: 'rgba(67, 56, 202, 1)'
-            }
-        };
+        // Helper to convert hex to rgba
+        function hexToRgba(hex, alpha) {
+            const r = parseInt(hex.slice(1, 3), 16);
+            const g = parseInt(hex.slice(3, 5), 16);
+            const b = parseInt(hex.slice(5, 7), 16);
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        }
 
-        const selectedThemeKey = document.getElementById("chart-theme")?.value || "slate";
-        const selectedTheme = themes[selectedThemeKey] || themes.slate;
+        const selectedColor = document.getElementById("chart-color")?.value || "#4a5568";
+        const bgColor = hexToRgba(selectedColor, 0.8);
+        const borderColor = selectedColor;
 
         activeOneWayChart = new Chart(ctx, {
             type: 'bar',
@@ -709,8 +694,8 @@ function drawOneWayScatterPlot(data) {
                     {
                         label: 'Mean',
                         data: meanValues,
-                        backgroundColor: selectedTheme.bg,
-                        borderColor: selectedTheme.border,
+                        backgroundColor: bgColor,
+                        borderColor: borderColor,
                         borderWidth: 1.5,
                         barPercentage: 0.5
                     }
