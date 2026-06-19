@@ -389,6 +389,421 @@ class TestAPIRoutes(unittest.TestCase):
         data_10 = resp_10.get_json()
         self.assertEqual(data_10['alpha'], 0.05)
 
+    def test_twoway_assumptions(self):
+        # Query two-way API
+        resp = self.client.get('/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+
+        # Check that assumptions fields are present
+        self.assertIn('shapiro_results', data)
+        self.assertIn('levene_result', data)
+
+        shapiro = data['shapiro_results']
+        levene = data['levene_result']
+
+        # Assert correct keys in shapiro
+        self.assertIn('statistic', shapiro)
+        self.assertIn('p_value', shapiro)
+        self.assertIn('normal', shapiro)
+        self.assertIn('note', shapiro)
+
+        # Assert correct keys in levene
+        self.assertIn('statistic', levene)
+        self.assertIn('p_value', levene)
+        self.assertIn('equal_variance', levene)
+        self.assertIn('note', levene)
+
+        # Ensure statistics are floats or correct robust types
+        if shapiro['statistic'] is not None:
+            self.assertIsInstance(shapiro['statistic'], float)
+            self.assertIsInstance(shapiro['p_value'], float)
+            self.assertIsInstance(shapiro['normal'], bool)
+        
+        if levene['statistic'] is not None:
+            self.assertIsInstance(levene['statistic'], float)
+            self.assertIsInstance(levene['p_value'], float)
+            self.assertIsInstance(levene['equal_variance'], bool)
+
+class TestTwoWaySubsetSelection(unittest.TestCase):
+    def setUp(self):
+        from app import app
+        self.client = app.test_client()
+        self.client.testing = True
+
+    def test_twoway_full_set_identity(self):
+        # 1. Fetch baseline (without biochars parameter, i.e., all biochars selected)
+        resp_baseline = self.client.get('/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207')
+        self.assertEqual(resp_baseline.status_code, 200)
+        data_baseline = resp_baseline.get_json()
+
+        # 2. Fetch with all 4 biochars explicitly in parameter
+        all_biochars = "Acrostichum aureum,Cyclosorus interruptus,Ludwigia peruviana,Quisqualis indica"
+        resp_all = self.client.get(f'/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207&biochars={all_biochars}')
+        self.assertEqual(resp_all.status_code, 200)
+        data_all = resp_all.get_json()
+
+        # 3. Assert exact statistical identities in the ANOVA table
+        baseline_anova = data_baseline['anova_table']
+        all_anova = data_all['anova_table']
+        
+        for key in baseline_anova.keys():
+            self.assertEqual(baseline_anova[key]['SS'], all_anova[key]['SS'])
+            self.assertEqual(baseline_anova[key]['df'], all_anova[key]['df'])
+            self.assertEqual(baseline_anova[key]['MS'], all_anova[key]['MS'])
+            self.assertEqual(baseline_anova[key]['F'], all_anova[key]['F'])
+            self.assertEqual(baseline_anova[key]['p_value'], all_anova[key]['p_value'])
+
+    def test_twoway_subset_filtering(self):
+        # Select subset: only Acrostichum aureum and Quisqualis indica
+        subset_biochars = "Acrostichum aureum,Quisqualis indica"
+        resp = self.client.get(f'/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207&biochars={subset_biochars}')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+
+        # Verify that cell_means and posthoc only include the selected biochars
+        cell_means_biochars = [row['Biochar'] for row in data['cell_means']]
+        self.assertEqual(sorted(cell_means_biochars), ["Acrostichum aureum", "Quisqualis indica"])
+
+        posthoc_biochars = list(data['posthoc_results'].keys())
+        self.assertEqual(sorted(posthoc_biochars), ["Acrostichum aureum", "Quisqualis indica"])
+
+        df_ver = data['debug_details']['df_verification']
+        self.assertTrue(df_ver['df_verified'])
+
+    def test_twoway_subset_validation_error(self):
+        # Query with only 1 biochar selected
+        resp = self.client.get('/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207&biochars=Acrostichum%20aureum')
+        self.assertEqual(resp.status_code, 400)
+        data = resp.get_json()
+        self.assertEqual(data['status'], 'error')
+        self.assertIn("minimum 2 required", data['message'])
+
+    def test_twoway_control_mode_replicated_default(self):
+        # Default query
+        resp_def = self.client.get('/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207')
+        self.assertEqual(resp_def.status_code, 200)
+        data_def = resp_def.get_json()
+        
+        # Explicit replicated query
+        resp_repl = self.client.get('/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207&control_mode=replicated')
+        self.assertEqual(resp_repl.status_code, 200)
+        data_repl = resp_repl.get_json()
+        
+        # Assert equal results
+        self.assertEqual(data_def['control_mode'], 'replicated')
+        self.assertEqual(data_repl['control_mode'], 'replicated')
+        self.assertEqual(data_def['anova_table']['Residual']['SS'], data_repl['anova_table']['Residual']['SS'])
+
+    def test_twoway_control_mode_exclude(self):
+        # Exclude shared control query
+        resp = self.client.get('/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207&control_mode=exclude')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        
+        self.assertEqual(data['control_mode'], 'exclude')
+        self.assertEqual(data['control_mode_label'], 'Exclude Shared Control')
+        
+        # Concentration 0.0 must be completely absent from factor levels
+        concs = data['debug_details']['factor_levels']['Concentration']
+        self.assertNotIn(0.0, concs)
+        self.assertNotIn("0.0", concs)
+        self.assertNotIn(0, concs)
+        
+        # Cell means grid must not have control
+        for row in data['cell_means']:
+            self.assertNotIn("0.0", row)
+            self.assertNotIn("0", row)
+            
+        # Tukey table must not contain Control vs ...
+        for b_key, comparisons in data['posthoc_results'].items():
+            for comp in comparisons:
+                self.assertNotEqual(comp['group1'], 'Control')
+                self.assertNotEqual(comp['group2'], 'Control')
+                
+        # Verification that degree of freedom of Concentration corresponds to 4 levels (0.1, 0.2, 0.3, 0.5 -> df = 3)
+        df_conc = data['anova_table']['C(Concentration, Sum)']['df']
+        self.assertEqual(df_conc, 3)
+
+    def test_twoway_bidirectional_sme(self):
+        # 1. Default replicated query
+        resp = self.client.get('/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+
+        self.assertIn('simple_main_effects', data)
+        sme = data['simple_main_effects']
+        self.assertIn('within_biochar', sme)
+        self.assertIn('within_concentration', sme)
+
+        # Check within_biochar metadata
+        wb = sme['within_biochar']
+        self.assertEqual(wb['selector_type'], 'biochar')
+        self.assertIsInstance(wb['selector_values'], list)
+        self.assertIn('Acrostichum aureum', wb['selector_values'])
+        self.assertIn('Acrostichum aureum', wb['results'])
+
+        # Check within_concentration metadata
+        wc = sme['within_concentration']
+        self.assertEqual(wc['selector_type'], 'concentration')
+        self.assertIsInstance(wc['selector_values'], list)
+        # Replicated mode: Control should be present in concentration values
+        self.assertIn('Control', wc['selector_values'])
+        self.assertIn('Control', wc['results'])
+
+        # Verify comparison fields are present and preformatted correctly
+        for b_val in wb['results']['Acrostichum aureum']:
+            self.assertIn('comparison', b_val)
+            self.assertIn(' vs ', b_val['comparison'])
+            self.assertEqual(b_val['comparison'], f"{b_val['group1']} vs {b_val['group2']}")
+
+        for c_val in wc['results']['Control']:
+            self.assertIn('comparison', c_val)
+            self.assertIn(' vs ', c_val['comparison'])
+            self.assertEqual(c_val['comparison'], f"{c_val['group1']} vs {c_val['group2']}")
+
+        # Verify legacy posthoc_results is identical to simple_main_effects within_biochar
+        self.assertEqual(data['posthoc_results'], wb['results'])
+
+        # 2. Exclude shared control query
+        resp_ex = self.client.get('/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207&control_mode=exclude')
+        self.assertEqual(resp_ex.status_code, 200)
+        data_ex = resp_ex.get_json()
+
+        sme_ex = data_ex['simple_main_effects']
+        wc_ex = sme_ex['within_concentration']
+        
+        # Exclude mode: Control should be absent in concentration values
+        self.assertNotIn('Control', wc_ex['selector_values'])
+        self.assertNotIn('Control', wc_ex['results'])
+
+    def test_twoway_excel_export_structure(self):
+        import io
+        import openpyxl
+        from app import run_two_way_analysis
+        
+        # 1. Export Excel using the new endpoint
+        payload = {
+            "crop": "Onion",
+            "variable": "Root Length",
+            "day": "Day 7",
+            "biochars": "Acrostichum aureum,Quisqualis indica",
+            "control_mode": "replicated",
+            "alpha": 0.05
+        }
+        response = self.client.post('/api/export-excel-twoway', json=payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        
+        # 2. Load workbook
+        wb = openpyxl.load_workbook(io.BytesIO(response.data))
+        
+        # 3. Verify worksheet names
+        expected_sheets = [
+            "Analysis Summary",
+            "Experimental Design",
+            "Cell Means Matrix",
+            "Type III ANOVA",
+            "Assumption Diagnostics",
+            "Simple Main Effects",
+            "Interaction Plot Data",
+            "Analysis Dataset"
+        ]
+        self.assertEqual(wb.sheetnames, expected_sheets)
+        
+        # 4. Verify representative cell values in Sheet 1: Analysis Summary
+        ws1 = wb["Analysis Summary"]
+        self.assertEqual(ws1["A1"].value, "Two-Way ANOVA Analysis Summary")
+        self.assertEqual(ws1["A4"].value, "Crop")
+        self.assertEqual(ws1["B4"].value, "Onion")
+        self.assertEqual(ws1["A5"].value, "Variable")
+        self.assertEqual(ws1["B5"].value, "Root Length")
+        self.assertEqual(ws1["A6"].value, "Day")
+        self.assertEqual(ws1["B6"].value, "Day 7")
+        self.assertEqual(ws1["A11"].value, "Control Handling Mode")
+        self.assertEqual(ws1["B11"].value, "Include Independent Controls (Default)")
+        
+        # 5. Verify Sheet 2: Experimental Design
+        ws2 = wb["Experimental Design"]
+        self.assertEqual(ws2["A1"].value, "Experimental Design Summary")
+        self.assertEqual(ws2["A6"].value, "Active Biochar Species")
+        self.assertEqual(ws2["B6"].value, "Acrostichum aureum, Quisqualis indica")
+        self.assertEqual(ws2["A7"].value, "Active Concentration Levels")
+        self.assertEqual(ws2["B7"].value, "Control, 0.1 g/L, 0.2 g/L, 0.3 g/L, 0.5 g/L")
+        
+        # 6. Verify Sheet 3: Cell Means Matrix
+        ws3 = wb["Cell Means Matrix"]
+        self.assertEqual(ws3["A1"].value, "Cell Replication & Means Matrix (Biochar Species × Concentration)")
+        self.assertEqual(ws3["A3"].value, "Biochar Species")
+        self.assertEqual(ws3["B3"].value, "Control")
+        self.assertEqual(ws3["C3"].value, "0.1 g/L")
+        self.assertEqual(ws3["A4"].value, "Acrostichum aureum")
+        self.assertEqual(ws3["A5"].value, "Quisqualis indica")
+        
+        val_cell = ws3["B4"].value
+        self.assertIn("SD: ", val_cell)
+        self.assertIn("(N=", val_cell)
+        
+        # 7. Verify Sheet 4: Type III ANOVA
+        ws4 = wb["Type III ANOVA"]
+        self.assertEqual(ws4["A1"].value, "Type III ANOVA Table (For Unbalanced Designs)")
+        self.assertEqual(ws4["A5"].value, "Biochar Species (Factor A)")
+        self.assertEqual(ws4["A6"].value, "Concentration (Factor B)")
+        self.assertEqual(ws4["A7"].value, "Biochar Species & Concentration (Interaction)")
+        self.assertEqual(ws4["A8"].value, "Error (Residuals)")
+        self.assertEqual(ws4["A9"].value, "Total (Corrected)")
+        
+        self.assertEqual(ws4["C5"].value, 1) # 2 biochars -> 1 df
+        self.assertEqual(ws4["C6"].value, 4) # 5 concentrations -> 4 df
+        self.assertEqual(ws4["C7"].value, 4) # Interaction -> 4 df
+        
+        err_df = ws4["C8"].value
+        total_df = ws4["C9"].value
+        self.assertEqual(total_df, 1 + 4 + 4 + err_df)
+        
+        # 8. Verify Sheet 5: Assumption Diagnostics
+        ws5 = wb["Assumption Diagnostics"]
+        self.assertEqual(ws5["A1"].value, "Homogeneity of Variance (Levene's Test)")
+        self.assertEqual(ws5["A11"].value, "Normality of Residuals (Shapiro-Wilk Test)")
+        
+        # 9. Verify Sheet 6: Simple Main Effects
+        ws6 = wb["Simple Main Effects"]
+        self.assertEqual(ws6["A1"].value, "Post-hoc Analysis of Simple Main Effects (Tukey HSD)")
+        col_A_vals = [cell.value for cell in ws6["A"]]
+        self.assertIn("Section B: Compare Biochar Species within Concentration", col_A_vals)
+        
+        # 10. Verify Sheet 8: Analysis Dataset integrity
+        ws8 = wb["Analysis Dataset"]
+        self.assertEqual(ws8["A1"].value, "Analysis Dataset (OLS Model Inputs)")
+        
+        # Verify dataset matches df used for model fitting
+        res_dict, combined_df = run_two_way_analysis(
+            "Onion",
+            "Root Length",
+            "Day 7",
+            "Acrostichum aureum,Quisqualis indica",
+            "replicated",
+            "0.05"
+        )
+        sheet_rows = []
+        for r_idx in range(4, ws8.max_row + 1):
+            b_val = ws8.cell(row=r_idx, column=1).value
+            c_val = ws8.cell(row=r_idx, column=2).value
+            v_val = ws8.cell(row=r_idx, column=3).value
+            if b_val is not None:
+                sheet_rows.append({
+                    "Biochar": b_val,
+                    "Concentration": float(c_val),
+                    "Value": float(v_val)
+                })
+        
+        df_rows = []
+        for idx, r in combined_df.iterrows():
+            df_rows.append({
+                "Biochar": r["Biochar"],
+                "Concentration": float(r["Concentration"]),
+                "Value": float(r["Value"])
+            })
+            
+        self.assertEqual(len(sheet_rows), len(df_rows))
+        for s_row, d_row in zip(sheet_rows, df_rows):
+            self.assertEqual(s_row["Biochar"], d_row["Biochar"])
+            self.assertAlmostEqual(s_row["Concentration"], d_row["Concentration"])
+            self.assertAlmostEqual(s_row["Value"], d_row["Value"], places=4)
+
+    def test_twoway_excel_export_exclude_control(self):
+        import io
+        import openpyxl
+        from app import run_two_way_analysis
+        
+        payload = {
+            "crop": "Onion",
+            "variable": "Root Length",
+            "day": "Day 7",
+            "biochars": "Acrostichum aureum,Quisqualis indica",
+            "control_mode": "exclude",
+            "alpha": 0.05
+        }
+        response = self.client.post('/api/export-excel-twoway', json=payload)
+        self.assertEqual(response.status_code, 200)
+        
+        wb = openpyxl.load_workbook(io.BytesIO(response.data))
+        
+        # Verify Sheet 1 control mode value
+        ws1 = wb["Analysis Summary"]
+        self.assertEqual(ws1["B11"].value, "Exclude Shared Control")
+        
+        # Verify Sheet 2 active concentration levels does not contain "Control"
+        ws2 = wb["Experimental Design"]
+        self.assertEqual(ws2["B7"].value, "0.1 g/L, 0.2 g/L, 0.3 g/L, 0.5 g/L")
+        
+        # Verify Sheet 3 cell means matrix columns do not contain "Control"
+        ws3 = wb["Cell Means Matrix"]
+        headers = [cell.value for cell in ws3[3] if cell.value is not None]
+        self.assertNotIn("Control", headers)
+        
+        # Verify Sheet 4: df of Concentration (Factor B) is 3 (levels: 0.1, 0.2, 0.3, 0.5 -> 3 df)
+        ws4 = wb["Type III ANOVA"]
+        self.assertEqual(ws4["C6"].value, 3)
+        self.assertEqual(ws4["C7"].value, 3)
+        
+        # Verify Sheet 6: SME comparisons do not contain "Control"
+        ws6 = wb["Simple Main Effects"]
+        for row in ws6.iter_rows(values_only=True):
+            if row[0] is not None and "Section A" in str(row[0]):
+                continue
+            if row[0] is not None and "Section B" in str(row[0]):
+                continue
+            if row[1] is not None:
+                self.assertNotIn("Control", str(row[1]))
+                self.assertNotIn("0.0", str(row[1]))
+            if row[0] is not None:
+                self.assertNotIn("Control", str(row[0]))
+                
+        # Verify Sheet 8: Analysis Dataset does not contain Concentration = 0.0, and matches model fitting dataframe
+        ws8 = wb["Analysis Dataset"]
+        for r_idx in range(4, ws8.max_row + 1):
+            conc_val = ws8.cell(row=r_idx, column=2).value
+            if conc_val is not None:
+                self.assertNotEqual(float(conc_val), 0.0)
+
+        # Verify dataset matches df used for model fitting
+        res_dict, combined_df = run_two_way_analysis(
+            "Onion",
+            "Root Length",
+            "Day 7",
+            "Acrostichum aureum,Quisqualis indica",
+            "exclude",
+            "0.05"
+        )
+        sheet_rows = []
+        for r_idx in range(4, ws8.max_row + 1):
+            b_val = ws8.cell(row=r_idx, column=1).value
+            c_val = ws8.cell(row=r_idx, column=2).value
+            v_val = ws8.cell(row=r_idx, column=3).value
+            if b_val is not None:
+                sheet_rows.append({
+                    "Biochar": b_val,
+                    "Concentration": float(c_val),
+                    "Value": float(v_val)
+                })
+        
+        df_rows = []
+        for idx, r in combined_df.iterrows():
+            df_rows.append({
+                "Biochar": r["Biochar"],
+                "Concentration": float(r["Concentration"]),
+                "Value": float(r["Value"])
+            })
+            
+        self.assertEqual(len(sheet_rows), len(df_rows))
+        for s_row, d_row in zip(sheet_rows, df_rows):
+            self.assertEqual(s_row["Biochar"], d_row["Biochar"])
+            self.assertAlmostEqual(s_row["Concentration"], d_row["Concentration"])
+            self.assertAlmostEqual(s_row["Value"], d_row["Value"], places=4)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

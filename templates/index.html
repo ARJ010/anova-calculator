@@ -335,10 +335,41 @@
                         <div class="card-body">
                             <div class="row align-items-center">
                                 <div class="col-sm-8">
-                                    <span class="text-muted">Factor A: <strong>Biochar Type</strong> &nbsp;|&nbsp; Factor B: <strong>Concentration</strong></span>
+                                    <span class="text-muted">Factor A: <strong>Biochar Species</strong> &nbsp;|&nbsp; Factor B: <strong>Concentration</strong></span>
                                 </div>
                                 <div class="col-sm-4 text-end">
                                     <button type="button" id="run-twoway" class="btn btn-success fw-bold w-100">Run Type III Two-Way ANOVA</button>
+                                </div>
+                            </div>
+                            <div class="row mt-3">
+                                <div class="col-12">
+                                    <label id="twoway-biochar-checklist-label" class="form-label fw-bold mb-1" style="font-size: 0.9rem;">Select Biochar Species:</label>
+                                    <div id="twoway-biochar-checklist" aria-labelledby="twoway-biochar-checklist-label" class="d-flex flex-wrap gap-3 border p-2 rounded bg-light" style="font-size: 0.9rem;">
+                                        <!-- Dynamically populated checkboxes -->
+                                    </div>
+                                    <div id="twoway-validation-alert" aria-live="polite" role="alert" class="alert alert-danger mt-2 py-1 px-2 mb-0" style="display: none; font-size: 0.85rem;"></div>
+                                </div>
+                            </div>
+                            <div class="row mt-3 pt-3 border-top">
+                                <div class="col-12">
+                                    <label id="twoway-control-mode-label" class="form-label fw-bold mb-1" style="font-size: 0.9rem;">Control Handling Mode:</label>
+                                    <div class="d-flex gap-4 align-items-center mb-2" style="font-size: 0.9rem;" role="radiogroup" aria-labelledby="twoway-control-mode-label">
+                                        <div class="form-check">
+                                            <input class="form-check-input twoway-control-mode-radio" type="radio" name="twoway-control-mode" id="control-mode-replicated" value="replicated" checked>
+                                            <label class="form-check-label fw-normal" for="control-mode-replicated">
+                                                Include Independent Controls (Default)
+                                            </label>
+                                        </div>
+                                        <div class="form-check">
+                                            <input class="form-check-input twoway-control-mode-radio" type="radio" name="twoway-control-mode" id="control-mode-exclude" value="exclude">
+                                            <label class="form-check-label fw-normal" for="control-mode-exclude">
+                                                Exclude Shared Control
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div id="twoway-control-note" class="text-muted p-2 rounded bg-light" style="font-size: 0.8rem; border-left: 3px solid #198754; display: block;">
+                                        <!-- Dynamic note text populated in JS -->
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -347,9 +378,14 @@
                     <!-- Two-Way Result Cards -->
                     <div id="twoway-results" style="display: none;">
                         
+                        <!-- Exclude Control Banner Notice -->
+                        <div id="twoway-exclude-control-banner" class="alert alert-info py-2 mb-3" role="alert" style="display: none; font-size: 0.85rem;">
+                            <strong>Statistical Note:</strong> The shared control group was excluded before fitting the factorial model. Results therefore describe only treatment concentrations. Control-versus-treatment comparisons are intentionally omitted because the shared control was not part of the fitted statistical model.
+                        </div>
+
                         <!-- Cell Means Grid -->
                         <div class="card">
-                            <div class="card-header bg-light">Cell Replication & Means Matrix (Biochar &times; Concentration)</div>
+                            <div class="card-header bg-light">Cell Replication & Means Matrix (Biochar Species &times; Concentration)</div>
                             <div class="card-body p-0 table-responsive">
                                 <table class="table table-bordered mb-0" id="twoway-means-table">
                                     <thead>
@@ -357,6 +393,31 @@
                                     </thead>
                                     <tbody></tbody>
                                 </table>
+                            </div>
+                        </div>
+
+                        <!-- Two-Way ANOVA Analysis Summary -->
+                        <div class="card mb-3">
+                            <div class="card-header bg-light fw-bold text-success-emphasis" style="font-size: 0.85rem; padding: 0.4rem 1rem;">Analysis Summary</div>
+                            <div class="card-body py-2 px-3" style="font-size: 0.85rem;">
+                                <div class="row">
+                                    <div class="col-md-3 border-md-end py-1">
+                                        <div class="text-muted" style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;">Factor A (Independent)</div>
+                                        <div class="fw-bold text-dark" id="summary-factor-a">Biochar Species</div>
+                                    </div>
+                                    <div class="col-md-3 border-md-end py-1">
+                                        <div class="text-muted" style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;">Factor B (Independent)</div>
+                                        <div class="fw-bold text-dark" id="summary-factor-b">Concentration</div>
+                                    </div>
+                                    <div class="col-md-3 border-md-end py-1">
+                                        <div class="text-muted" style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;">Number of Biochar Species</div>
+                                        <div class="fw-bold text-dark" id="summary-biochars-count">-</div>
+                                    </div>
+                                    <div class="col-md-3 py-1">
+                                        <div class="text-muted" style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;">Experimental Design</div>
+                                        <div class="fw-bold text-dark" id="summary-design-mode">-</div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
@@ -387,9 +448,38 @@
                             </div>
                         </div>
 
+                        <!-- Two-Way Assumption Diagnostics -->
+                        <div class="row mb-4">
+                            <!-- Levene's Test -->
+                            <div class="col-md-6 mb-3 mb-md-0">
+                                <div class="card h-100">
+                                    <div class="card-header bg-light">Homogeneity of Variance (Levene)</div>
+                                    <div class="card-body">
+                                        <p class="mb-2"><strong>Levene Statistic:</strong> <span id="twoway-levene-stat"></span></p>
+                                        <p class="mb-3"><strong>p-value:</strong> <span id="twoway-levene-p"></span></p>
+                                        <div class="alert mb-0" id="twoway-levene-alert" role="alert"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Shapiro-Wilk Test -->
+                            <div class="col-md-6">
+                                <div class="card h-100">
+                                    <div class="card-header bg-light">Normality of Residuals (Shapiro-Wilk)</div>
+                                    <div class="card-body">
+                                        <p class="mb-2"><strong>Shapiro-Wilk Statistic:</strong> <span id="twoway-shapiro-stat"></span></p>
+                                        <p class="mb-3"><strong>p-value:</strong> <span id="twoway-shapiro-p"></span></p>
+                                        <div class="alert mb-0" id="twoway-shapiro-alert" role="alert"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Interaction Plot -->
                         <div class="card">
-                            <div class="card-header bg-light">Interaction Plot (Dose Response Curves)</div>
+                            <div class="card-header bg-light d-flex flex-wrap justify-content-between align-items-center gap-2">
+                                <span>Interaction Plot</span>
+                                <button type="button" id="download-twoway-excel" class="btn btn-sm btn-outline-success fw-bold">Download Excel Report (.xlsx)</button>
+                            </div>
                             <div class="card-body">
                                 <div style="height: 380px; position: relative;">
                                     <canvas id="interaction-canvas"></canvas>
@@ -399,20 +489,50 @@
 
                         <!-- Post-Hoc (Simple Main Effects) Tukey Table -->
                         <div class="card" id="twoway-posthoc-card" style="display: none;">
-                            <div class="card-header bg-light d-flex justify-content-between align-items-center">
-                                <span>Simple Main Effects Post-Hoc (Tukey HSD)</span>
-                                <div class="d-flex align-items-center">
-                                    <label for="posthoc-biochar-select" class="form-label mb-0 me-2 text-nowrap" style="font-size: 0.85rem;">View Biochar:</label>
-                                    <select class="form-select form-select-sm" id="posthoc-biochar-select" style="width: 200px;">
-                                        <!-- Options populated dynamically -->
-                                    </select>
+                            <div class="card-header bg-light d-flex flex-wrap justify-content-between align-items-center gap-3">
+                                <div class="d-flex flex-column gap-1 w-100 w-lg-auto">
+                                    <div class="d-flex flex-column flex-md-row align-items-start align-items-md-center gap-2 gap-md-3" role="radiogroup" aria-labelledby="posthoc-analysis-title">
+                                        <span id="posthoc-analysis-title" class="fw-bold text-nowrap">Post-hoc Analysis of Simple Main Effects (Tukey HSD)</span>
+                                        <div class="d-flex flex-wrap gap-2 gap-md-3 align-items-center border-md-start ps-md-3" style="font-size: 0.85rem;">
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input twoway-posthoc-direction-radio" type="radio" name="twoway-posthoc-direction" id="direction-within-biochar" value="within_biochar" checked>
+                                                <label class="form-check-label text-nowrap" for="direction-within-biochar">
+                                                    Compare Concentrations within Biochar Species
+                                                </label>
+                                            </div>
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input twoway-posthoc-direction-radio" type="radio" name="twoway-posthoc-direction" id="direction-within-concentration" value="within_concentration">
+                                                <label class="form-check-label text-nowrap" for="direction-within-concentration">
+                                                    Compare Biochar Species within Concentration
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div id="posthoc-direction-explanation" class="text-muted mb-0" style="font-size: 0.75rem;">
+                                        Compare treatment concentrations separately within the selected biochar species.
+                                    </div>
+                                </div>
+                                <div class="d-flex align-items-center flex-wrap gap-2">
+                                    <div id="posthoc-biochar-select-container" class="d-flex align-items-center">
+                                        <label for="posthoc-biochar-select" class="form-label mb-0 me-2 text-nowrap" style="font-size: 0.85rem;">Select Biochar Species:</label>
+                                        <select class="form-select form-select-sm" id="posthoc-biochar-select" style="width: 200px;">
+                                            <!-- Options populated dynamically -->
+                                        </select>
+                                    </div>
+                                    <div id="posthoc-concentration-select-container" class="d-flex align-items-center" style="display: none !important;">
+                                        <label for="posthoc-concentration-select" class="form-label mb-0 me-2 text-nowrap" style="font-size: 0.85rem;">Select Concentration:</label>
+                                        <select class="form-select form-select-sm" id="posthoc-concentration-select" style="width: 200px;">
+                                            <!-- Options populated dynamically -->
+                                        </select>
+                                    </div>
                                 </div>
                             </div>
                             <div class="card-body p-0 table-responsive">
+                                <div class="px-3 py-2 bg-light-subtle border-bottom fw-semibold text-secondary" id="twoway-posthoc-context-header" style="font-size: 0.85rem;"></div>
                                 <table class="table table-hover table-striped mb-0" id="twoway-posthoc-table">
                                     <thead>
                                         <tr>
-                                            <th>Comparison (Concentrations)</th>
+                                            <th id="twoway-posthoc-comp-header">Comparison (Concentrations)</th>
                                             <th>Mean Difference</th>
                                             <th>Adjusted p-value</th>
                                             <th>95% CI (Lower, Upper)</th>

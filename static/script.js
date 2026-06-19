@@ -30,7 +30,9 @@ let metadata = {};
 let activeOneWayChart = null;
 let activeTwoWayChart = null;
 let twoWayPostHocData = {};
+let twoWaySMEData = null;
 let lastOneWayData = null;
+let lastTwoWayData = null;
 let currentGraphMode = 'dist'; // 'dist' or 'pub'
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -43,11 +45,96 @@ document.addEventListener("DOMContentLoaded", () => {
     // ANOVA trigger buttons
     document.getElementById("run-oneway").addEventListener("click", handleOneWayRun);
     document.getElementById("run-twoway").addEventListener("click", handleTwoWayRun);
+    initializeTwoWayControlMode();
     
     // Post-hoc selector for Two-Way Simple Main Effects
     document.getElementById("posthoc-biochar-select").addEventListener("change", (e) => {
         renderTwoWayPostHocTable(e.target.value);
     });
+
+    const concSelectEl = document.getElementById("posthoc-concentration-select");
+    if (concSelectEl) {
+        concSelectEl.addEventListener("change", (e) => {
+            renderTwoWayPostHocTable(e.target.value);
+        });
+    }
+
+    document.querySelectorAll('input[name="twoway-posthoc-direction"]').forEach(radio => {
+        radio.addEventListener("change", (e) => {
+            handlePostHocDirectionChange(e.target.value);
+        });
+    });
+
+    // Download Two-Way Excel Report button listener
+    const downloadTwoWayExcelBtn = document.getElementById("download-twoway-excel");
+    if (downloadTwoWayExcelBtn) {
+        downloadTwoWayExcelBtn.addEventListener("click", () => {
+            if (!lastTwoWayData) return;
+            
+            const originalText = downloadTwoWayExcelBtn.textContent;
+            downloadTwoWayExcelBtn.disabled = true;
+            downloadTwoWayExcelBtn.textContent = "Generating Report...";
+            
+            const crop = document.getElementById("crop").value;
+            const variable = document.getElementById("variable").value;
+            const day = document.getElementById("day").value;
+            
+            // Gather selected biochars
+            const checkedBiochars = [];
+            document.querySelectorAll("#twoway-biochar-checklist input:checked").forEach(cb => {
+                checkedBiochars.push(cb.value);
+            });
+            const biocharsStr = checkedBiochars.join(",");
+            
+            const controlModeRadio = document.querySelector('input[name="twoway-control-mode"]:checked');
+            const control_mode = controlModeRadio ? controlModeRadio.value : "replicated";
+            
+            const alpha_val = lastTwoWayData.alpha || 0.05;
+            
+            const payload = {
+                crop,
+                variable,
+                day,
+                biochars: biocharsStr,
+                control_mode,
+                alpha: alpha_val
+            };
+            
+            fetch("/api/export-excel-twoway", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error("Failed to generate Excel report");
+                }
+                return response.blob();
+            })
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                
+                // Filename formatting
+                const safeCrop = crop.replace(/\s+/g, "");
+                const safeVar = variable.replace(/\s+/g, "");
+                const safeDay = day.replace(/\s+/g, "");
+                const today = new Date().toISOString().split('T')[0];
+                a.download = `TwoWayANOVA_${safeCrop}_${safeVar}_${safeDay}_${today}.xlsx`;
+                a.click();
+            })
+            .catch(error => {
+                showError("Excel export error: " + error.message);
+            })
+            .finally(() => {
+                downloadTwoWayExcelBtn.disabled = false;
+                downloadTwoWayExcelBtn.textContent = originalText;
+            });
+        });
+    }
 
     // Listen to changes in graph view mode
     document.querySelectorAll('input[name="graphMode"]').forEach(radio => {
@@ -281,6 +368,90 @@ function populateSelectors(crop) {
         opt.textContent = c + " g/L";
         concSelect.appendChild(opt);
     });
+
+    // Populate Two-Way Biochar Checklist
+    populateTwoWayBiocharChecklist(crop);
+}
+
+function populateTwoWayBiocharChecklist(crop) {
+    const cropData = metadata[crop];
+    if (!cropData) return;
+
+    const checklistContainer = document.getElementById("twoway-biochar-checklist");
+    if (!checklistContainer) return;
+    
+    checklistContainer.innerHTML = "";
+
+    const availableBiochars = cropData.biochars;
+    
+    availableBiochars.forEach((b, idx) => {
+        const wrapper = document.createElement("div");
+        wrapper.className = "form-check form-check-inline mb-0";
+        
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.className = "form-check-input twoway-biochar-checkbox";
+        checkbox.id = `twoway-biochar-${idx}`;
+        checkbox.value = b;
+        checkbox.checked = true;
+        
+        const label = document.createElement("label");
+        label.className = "form-check-label fw-normal";
+        label.htmlFor = `twoway-biochar-${idx}`;
+        label.textContent = b;
+        
+        wrapper.appendChild(checkbox);
+        wrapper.appendChild(label);
+        checklistContainer.appendChild(wrapper);
+        
+        checkbox.addEventListener("change", validateTwoWayBiocharsSelection);
+    });
+    
+    validateTwoWayBiocharsSelection();
+}
+
+function validateTwoWayBiocharsSelection() {
+    const checkboxes = document.querySelectorAll(".twoway-biochar-checkbox");
+    const checkedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+    const runBtn = document.getElementById("run-twoway");
+    const alertDiv = document.getElementById("twoway-validation-alert");
+    
+    if (checkedCount < 2) {
+        runBtn.disabled = true;
+        runBtn.setAttribute("aria-describedby", "twoway-validation-alert");
+        runBtn.setAttribute("title", "Disabled: At least two treatment biochar species must be selected.");
+        alertDiv.style.display = "block";
+        alertDiv.textContent = "Validation Error: At least two treatment biochar species must be selected to perform a Two-Way ANOVA.";
+    } else {
+        runBtn.disabled = false;
+        runBtn.removeAttribute("aria-describedby");
+        runBtn.removeAttribute("title");
+        alertDiv.style.display = "none";
+        alertDiv.textContent = "";
+    }
+}
+
+function initializeTwoWayControlMode() {
+    const noteDiv = document.getElementById("twoway-control-note");
+    if (!noteDiv) return;
+
+    const notes = {
+        replicated: "Use when each biochar species has its own independent untreated control group. This preserves the complete factorial experimental design.",
+        exclude: "Use when one untreated control group is shared across all biochar species. Excluding the shared control avoids pseudoreplication and produces a treatment-only factorial analysis."
+    };
+
+    function updateNote() {
+        const activeRadio = document.querySelector('input[name="twoway-control-mode"]:checked');
+        if (activeRadio) {
+            noteDiv.textContent = notes[activeRadio.value] || "";
+        }
+    }
+
+    document.querySelectorAll('input[name="twoway-control-mode"]').forEach(radio => {
+        radio.addEventListener("change", updateNote);
+    });
+
+    updateNote();
 }
 
 function handleCropChange(e) {
@@ -927,12 +1098,27 @@ function handleTwoWayRun() {
     const day = document.getElementById("day").value;
     const alpha = document.getElementById("alpha").value;
 
+    // Retrieve checked biochars
+    const checkboxes = document.querySelectorAll(".twoway-biochar-checkbox");
+    const checkedBiochars = Array.from(checkboxes)
+        .filter(cb => cb.checked)
+        .map(cb => cb.value);
+
+    // Retrieve control handling mode
+    const controlModeRadio = document.querySelector('input[name="twoway-control-mode"]:checked');
+    const controlMode = controlModeRadio ? controlModeRadio.value : "replicated";
+
     const params = new URLSearchParams({
         crop,
         variable,
         day,
-        alpha
+        alpha,
+        control_mode: controlMode
     });
+
+    if (checkedBiochars.length > 0) {
+        params.append("biochars", checkedBiochars.join(","));
+    }
 
     const runBtn = document.getElementById("run-twoway");
     const originalText = runBtn.textContent;
@@ -962,8 +1148,78 @@ function handleTwoWayRun() {
         });
 }
 
+function handlePostHocDirectionChange(direction) {
+    if (!twoWaySMEData) return;
+
+    const isWithinBiochar = (direction === 'within_biochar');
+    
+    const biocharContainer = document.getElementById("posthoc-biochar-select-container");
+    const concContainer = document.getElementById("posthoc-concentration-select-container");
+    
+    if (biocharContainer) {
+        biocharContainer.style.setProperty('display', isWithinBiochar ? 'flex' : 'none', 'important');
+    }
+    if (concContainer) {
+        concContainer.style.setProperty('display', !isWithinBiochar ? 'flex' : 'none', 'important');
+    }
+    
+    const explanationEl = document.getElementById("posthoc-direction-explanation");
+    if (explanationEl) {
+        explanationEl.textContent = isWithinBiochar
+            ? "Compare treatment concentrations separately within the selected biochar species."
+            : "Compare biochar species separately at the selected concentration.";
+    }
+    
+    const compHeader = document.getElementById("twoway-posthoc-comp-header");
+    if (compHeader) {
+        compHeader.textContent = isWithinBiochar ? "Comparison (Concentrations)" : "Comparison (Biochars)";
+    }
+    
+    const activeKey = isWithinBiochar 
+        ? document.getElementById("posthoc-biochar-select").value 
+        : document.getElementById("posthoc-concentration-select").value;
+        
+    renderTwoWayPostHocTable(activeKey);
+}
+
 // Display Two-Way results in the UI
 function renderTwoWayResults(data) {
+    lastTwoWayData = data;
+    // Toggle Exclude Control Banner Notice
+    const excludeBanner = document.getElementById("twoway-exclude-control-banner");
+    if (excludeBanner) {
+        excludeBanner.style.display = data.control_mode === "exclude" ? "block" : "none";
+    }
+
+    // Populate Analysis Summary Card
+    const factorAEl = document.getElementById("summary-factor-a");
+    const factorBEl = document.getElementById("summary-factor-b");
+    const biocharsCountEl = document.getElementById("summary-biochars-count");
+    const designModeEl = document.getElementById("summary-design-mode");
+
+    if (factorAEl) factorAEl.textContent = "Biochar Species";
+    if (factorBEl) factorBEl.textContent = "Concentration";
+    
+    if (biocharsCountEl) {
+        const biocharCount = (data.debug_details && data.debug_details.factor_levels && data.debug_details.factor_levels.Biochar)
+            ? data.debug_details.factor_levels.Biochar.length 
+            : 0;
+        biocharsCountEl.textContent = `${biocharCount}`;
+    }
+
+    if (designModeEl) {
+        const designText = data.control_mode === "exclude"
+            ? "Treatment-only factorial design"
+            : "Complete factorial design";
+        const controlModeText = data.control_mode === "exclude"
+            ? "Exclude Shared Control"
+            : "Include Independent Controls (Default)";
+        designModeEl.innerHTML = `
+            <div>${designText}</div>
+            <div class="text-muted small fw-normal" style="font-size: 0.75rem;">${controlModeText}</div>
+        `;
+    }
+
     // 1. Render Cell Replication & Means Grid
     const thead = document.querySelector("#twoway-means-table thead");
     thead.innerHTML = "";
@@ -974,7 +1230,7 @@ function renderTwoWayResults(data) {
     
     // Header Row
     const headerTr = document.createElement("tr");
-    headerTr.innerHTML = `<th class="bg-light">Biochar Type</th>`;
+    headerTr.innerHTML = `<th class="bg-light">Biochar Species</th>`;
     concs.forEach(c => {
         headerTr.innerHTML += `<th class="bg-light text-center">${c === 0 ? "Control (0.0 g/L)" : c + " g/L"}</th>`;
     });
@@ -985,7 +1241,7 @@ function renderTwoWayResults(data) {
         const tr = document.createElement("tr");
         tr.innerHTML = `<td class="fw-bold">${row.Biochar}</td>`;
         concs.forEach(c => {
-            const cell = row[c.toString()] || row[c];
+            const cell = row[parseFloat(c).toFixed(1)] || row[c.toString()] || row[c];
             if (cell && cell.N > 0) {
                 const isControlCell = (c === 0);
                 const cellBgClass = isControlCell ? "table-light" : "";
@@ -1008,9 +1264,9 @@ function renderTwoWayResults(data) {
 
     const keyLabels = {
         "Intercept": "Intercept",
-        "C(Biochar, Sum)": "Biochar Type (Factor A)",
+        "C(Biochar, Sum)": "Biochar Species (Factor A)",
         "C(Concentration, Sum)": "Concentration (Factor B)",
-        "C(Biochar, Sum):C(Concentration, Sum)": "Biochar &times; Concentration (Interaction)",
+        "C(Biochar, Sum):C(Concentration, Sum)": "Biochar Species &times; Concentration (Interaction)",
         "Residual": "Error (Residuals)"
     };
 
@@ -1087,15 +1343,15 @@ function renderTwoWayResults(data) {
     const sigAB = p_AB !== undefined && p_AB < alpha_val;
 
     let inferenceHtml = `<strong>Inference Summary:</strong><ul class="mb-0 mt-1">`;
-    inferenceHtml += `<li><strong>Factor A (Biochar):</strong> ${sigA ? `<span class="text-success fw-bold">Significant (p = ${p_A.toFixed(4)})</span>. Biochar types differ in their general effect.` : `<span class="text-muted">Not Significant (p = ${p_A.toFixed(4)})</span>.`}</li>`;
-    inferenceHtml += `<li><strong>Factor B (Concentration):</strong> ${sigB ? `<span class="text-success fw-bold">Significant (p = ${p_B.toFixed(4)})</span>. Biochar concentrations differ in their general effect.` : `<span class="text-muted">Not Significant (p = ${p_B.toFixed(4)})</span>.`}</li>`;
-    inferenceHtml += `<li><strong>Interaction (Biochar &times; Concentration):</strong> ${sigAB ? `<span class="text-danger fw-bold">Significant (p = ${p_AB.toFixed(4)})</span>. The response curves are non-parallel.` : `<span class="text-muted">Not Significant (p = ${p_AB.toFixed(4)})</span>.`}</li>`;
+    inferenceHtml += `<li><strong>Factor A (Biochar Species):</strong> ${sigA ? `<span class="text-success fw-bold">Significant (p = ${p_A.toFixed(4)})</span>. Biochar species differ in their general effect.` : `<span class="text-muted">Not Significant (p = ${p_A.toFixed(4)})</span>.`}</li>`;
+    inferenceHtml += `<li><strong>Factor B (Concentration):</strong> ${sigB ? `<span class="text-success fw-bold">Significant (p = ${p_B.toFixed(4)})</span>. Concentrations differ in their general effect.` : `<span class="text-muted">Not Significant (p = ${p_B.toFixed(4)})</span>.`}</li>`;
+    inferenceHtml += `<li><strong>Interaction (Biochar Species &times; Concentration):</strong> ${sigAB ? `<span class="text-danger fw-bold">Significant (p = ${p_AB.toFixed(4)})</span>. The response curves are non-parallel.` : `<span class="text-muted">Not Significant (p = ${p_AB.toFixed(4)})</span>.`}</li>`;
     inferenceHtml += `</ul>`;
 
     if (sigAB) {
         inferenceHtml += `
             <div class="alert alert-warning mt-3 mb-0 py-2" style="font-size: 0.85rem;">
-                <strong>Scientific Interpretation Rule:</strong> Because the interaction effect is statistically significant (p < ${alpha_val}), you <strong>cannot</strong> interpret the main effects of Biochar or Concentration directly. Focus instead on the **Simple Main Effects** post-hoc Tukey comparisons shown below.
+                <strong>Scientific Interpretation Rule:</strong> Because the interaction effect is statistically significant (p < ${alpha_val}), you <strong>cannot</strong> interpret the main effects of Biochar Species or Concentration directly. Focus instead on the **Post-hoc Analysis of Simple Main Effects (Tukey HSD)** comparisons shown below.
             </div>
         `;
     } else {
@@ -1110,29 +1366,119 @@ function renderTwoWayResults(data) {
     // Render active alpha label
     const twowayAlphaLabel = document.getElementById("twoway-alpha-label");
     if (twowayAlphaLabel) {
-        twowayAlphaLabel.textContent = `Statistical hypothesis-test decisions evaluated at α = ${alpha_val}`;
+        twowayAlphaLabel.textContent = `Model Assumption Diagnostics (α = ${alpha_val})`;
+    }
+
+    // 3b. Render Two-Way Assumptions: Levene's Test
+    if (data.levene_result && data.levene_result.statistic !== null) {
+        document.getElementById("twoway-levene-stat").textContent = data.levene_result.statistic.toFixed(4);
+        document.getElementById("twoway-levene-p").textContent = data.levene_result.p_value.toFixed(6);
+        
+        const levAlert = document.getElementById("twoway-levene-alert");
+        if (data.levene_result.equal_variance) {
+            levAlert.className = "alert alert-success mb-0 py-2";
+            levAlert.innerHTML = `<strong>Homogeneity of variance assumption satisfied.</strong><br><br><small><strong>Interpretation:</strong><br>Variances appear sufficiently equal across all Biochar Species &times; Concentration cells.</small>`;
+        } else {
+            levAlert.className = "alert alert-warning mb-0 py-2";
+            levAlert.innerHTML = `<strong>Homogeneity of variance assumption may be violated.</strong><br><br><small><strong>Interpretation:</strong><br>Cell variances differ significantly. Two-Way ANOVA is robust to moderate variance differences when sample sizes are balanced, but interpretation should be cautious.</small>`;
+        }
+    } else {
+        document.getElementById("twoway-levene-stat").textContent = "N/A";
+        document.getElementById("twoway-levene-p").textContent = "N/A";
+        
+        const levAlert = document.getElementById("twoway-levene-alert");
+        levAlert.className = "alert alert-secondary mb-0 py-2";
+        const note = (data.levene_result && data.levene_result.note) ? data.levene_result.note : "Could not compute Levene's test.";
+        levAlert.innerHTML = `<strong>Not Applicable</strong><br><br><small><strong>Details:</strong><br>${note}</small>`;
+    }
+
+    // 3c. Render Two-Way Assumptions: Shapiro-Wilk Test
+    if (data.shapiro_results && data.shapiro_results.statistic !== null) {
+        document.getElementById("twoway-shapiro-stat").textContent = data.shapiro_results.statistic.toFixed(4);
+        document.getElementById("twoway-shapiro-p").textContent = data.shapiro_results.p_value.toFixed(6);
+        
+        const shapiroAlert = document.getElementById("twoway-shapiro-alert");
+        let noteText = "";
+        if (data.shapiro_results.note) {
+            noteText = `<br><br><span class="badge bg-info text-dark">Note:</span> <small>${data.shapiro_results.note}</small>`;
+        }
+        
+        if (data.shapiro_results.normal) {
+            shapiroAlert.className = "alert alert-success mb-0 py-2";
+            shapiroAlert.innerHTML = `<strong>Residuals appear approximately normally distributed.</strong><br><br><small><strong>Interpretation:</strong><br>Standard normality assumptions for the OLS model are met.</small>${noteText}`;
+        } else {
+            shapiroAlert.className = "alert alert-warning mb-0 py-2";
+            shapiroAlert.innerHTML = `<strong>Residual normality assumption may be violated.</strong><br><br><small><strong>Interpretation:</strong><br>Residuals deviate significantly from a normal distribution. While ANOVA is robust to mild deviations from normality with larger sample sizes, results should be interpreted with caution.</small>${noteText}`;
+        }
+    } else {
+        document.getElementById("twoway-shapiro-stat").textContent = "N/A";
+        document.getElementById("twoway-shapiro-p").textContent = "N/A";
+        
+        const shapiroAlert = document.getElementById("twoway-shapiro-alert");
+        shapiroAlert.className = "alert alert-secondary mb-0 py-2";
+        const note = (data.shapiro_results && data.shapiro_results.note) ? data.shapiro_results.note : "Could not compute normality check.";
+        shapiroAlert.innerHTML = `<strong>Not Applicable</strong><br><br><small><strong>Details:</strong><br>${note}</small>`;
     }
 
     // 4. Plot Interaction Line Chart
     drawTwoWayInteractionPlot(data);
 
     // 5. Setup Simple Main Effects Post-Hoc comparisons
-    twoWayPostHocData = data.posthoc_results;
+    twoWaySMEData = data.simple_main_effects;
+    twoWayPostHocData = data.posthoc_results; // Legacy fallback
+    
+    // Reset direction selection to within_biochar by default
+    const defaultRadio = document.getElementById("direction-within-biochar");
+    if (defaultRadio) {
+        defaultRadio.checked = true;
+    }
+    
+    const explanationEl = document.getElementById("posthoc-direction-explanation");
+    if (explanationEl) {
+        explanationEl.textContent = "Compare treatment concentrations separately within the selected biochar species.";
+    }
+    
+    // Reset dropdown visibility
+    const biocharContainer = document.getElementById("posthoc-biochar-select-container");
+    const concContainer = document.getElementById("posthoc-concentration-select-container");
+    if (biocharContainer) biocharContainer.style.setProperty('display', 'flex', 'important');
+    if (concContainer) concContainer.style.setProperty('display', 'none', 'important');
+    
+    const compHeader = document.getElementById("twoway-posthoc-comp-header");
+    if (compHeader) compHeader.textContent = "Comparison (Concentrations)";
     
     const biocharSelect = document.getElementById("posthoc-biochar-select");
-    biocharSelect.innerHTML = "";
+    if (biocharSelect) {
+        biocharSelect.innerHTML = "";
+        if (twoWaySMEData && twoWaySMEData.within_biochar) {
+            const biocharValues = twoWaySMEData.within_biochar.selector_values;
+            biocharValues.forEach(b => {
+                const opt = document.createElement("option");
+                opt.value = b;
+                opt.textContent = b;
+                biocharSelect.appendChild(opt);
+            });
+        }
+    }
     
-    const treatmentBiochars = Object.keys(twoWayPostHocData);
-    treatmentBiochars.forEach(b => {
-        const opt = document.createElement("option");
-        opt.value = b;
-        opt.textContent = b;
-        biocharSelect.appendChild(opt);
-    });
+    const concSelect = document.getElementById("posthoc-concentration-select");
+    if (concSelect) {
+        concSelect.innerHTML = "";
+        if (twoWaySMEData && twoWaySMEData.within_concentration) {
+            const concValues = twoWaySMEData.within_concentration.selector_values;
+            concValues.forEach(c => {
+                const opt = document.createElement("option");
+                opt.value = c;
+                opt.textContent = c;
+                concSelect.appendChild(opt);
+            });
+        }
+    }
 
-    if (treatmentBiochars.length > 0) {
-        biocharSelect.value = treatmentBiochars[0];
-        renderTwoWayPostHocTable(treatmentBiochars[0]);
+    if (twoWaySMEData && twoWaySMEData.within_biochar && twoWaySMEData.within_biochar.selector_values.length > 0) {
+        const initialBiochar = twoWaySMEData.within_biochar.selector_values[0];
+        if (biocharSelect) biocharSelect.value = initialBiochar;
+        renderTwoWayPostHocTable(initialBiochar);
         document.getElementById("twoway-posthoc-card").style.display = "block";
     } else {
         document.getElementById("twoway-posthoc-card").style.display = "none";
@@ -1145,12 +1491,37 @@ function renderTwoWayResults(data) {
     document.getElementById("twoway-results").style.display = "block";
 }
 
-// Render Simple Main Effects pairwise comparison table for chosen Biochar
-function renderTwoWayPostHocTable(biochar) {
+// Render Simple Main Effects pairwise comparison table for chosen group key (Biochar or Concentration)
+function renderTwoWayPostHocTable(key) {
     const tbody = document.querySelector("#twoway-posthoc-table tbody");
     tbody.innerHTML = "";
 
-    const comparisons = twoWayPostHocData[biochar];
+    if (!twoWaySMEData) {
+        tbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted">No comparisons available</td></tr>`;
+        return;
+    }
+
+    // Determine active direction
+    const activeRadio = document.querySelector('input[name="twoway-posthoc-direction"]:checked');
+    const direction = activeRadio ? activeRadio.value : 'within_biochar';
+    
+    // Update contextual heading
+    const contextHeader = document.getElementById("twoway-posthoc-context-header");
+    if (contextHeader) {
+        if (direction === 'within_biochar') {
+            contextHeader.textContent = `Current Analysis: Concentration comparisons within ${key}.`;
+        } else {
+            contextHeader.textContent = `Current Analysis: Biochar species comparisons within ${key}.`;
+        }
+    }
+    
+    const directionData = twoWaySMEData[direction];
+    if (!directionData) {
+        tbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted">No comparisons available</td></tr>`;
+        return;
+    }
+
+    const comparisons = directionData.results[key];
     if (!comparisons || comparisons.length === 0) {
         tbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted">No comparisons available</td></tr>`;
         return;
@@ -1159,8 +1530,12 @@ function renderTwoWayPostHocTable(biochar) {
     comparisons.forEach(row => {
         const tr = document.createElement("tr");
         const sigText = row.reject ? "<span class='text-danger fw-bold'>Significant</span>" : "<span class='text-secondary'>Not Significant</span>";
+        
+        // Use the preformatted comparison field returned by the backend
+        const comparisonText = row.comparison || `${row.group1} vs ${row.group2}`;
+        
         tr.innerHTML = `
-            <td><strong>${row.group1} vs ${row.group2}</strong></td>
+            <td><strong>${comparisonText}</strong></td>
             <td>${row.meandiff.toFixed(4)}</td>
             <td class="${row.reject ? 'text-success fw-bold' : ''}">${row.p_adj.toFixed(6)}</td>
             <td>[${row.lower.toFixed(4)}, ${row.upper.toFixed(4)}]</td>
@@ -1226,7 +1601,7 @@ function drawTwoWayInteractionPlot(data) {
                     position: 'bottom',
                     title: {
                         display: true,
-                        text: 'Biochar Concentration (g/L)',
+                        text: 'Concentration (g/L)',
                         color: '#2d3748',
                         font: {
                             size: 12,

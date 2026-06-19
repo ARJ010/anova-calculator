@@ -653,74 +653,187 @@ def api_one_way():
     
     return jsonify(response)
 
-@app.route("/api/two-way", methods=["POST", "GET"])
-def api_two_way():
-    if FLAT_DF is None:
-        return jsonify({"status": "error", "message": "Data pipeline not initialized"}), 500
+def calculate_simple_main_effects(combined_df, group_factor, compare_factor, mse_full, df_err, alpha):
+    import scipy.stats as stats
+    import numpy as np
+    
+    results = {}
+    
+    # Unique groups of the grouping factor
+    unique_groups = sorted(combined_df[group_factor].unique().tolist())
+        
+    for g in unique_groups:
+        # Determine group key string for the dictionary
+        if group_factor == "Concentration":
+            g_key = "Control" if g == 0.0 else f"{g} g/L"
+        else:
+            g_key = str(g)
+            
+        results[g_key] = []
+        
+        # Filter data for this group
+        df_g = combined_df[combined_df[group_factor] == g]
+        
+        # Unique levels of the comparison factor in this group
+        compare_levels = sorted(df_g[compare_factor].unique().tolist())
+        k_levels = len(compare_levels)
+        
+        if k_levels < 2:
+            continue
+            
+        # Calculate critical Q-value using studentized range
+        q_crit = stats.studentized_range.ppf(1.0 - alpha, k_levels, df_err)
+        
+        # Pairwise comparisons
+        for i in range(k_levels):
+            for j in range(i + 1, k_levels):
+                val1 = compare_levels[i]
+                val2 = compare_levels[j]
+                
+                # Retrieve data points for both compared levels
+                v1 = df_g[df_g[compare_factor] == val1]["Value"].tolist()
+                v2 = df_g[df_g[compare_factor] == val2]["Value"].tolist()
+                
+                n1 = len(v1)
+                n2 = len(v2)
+                
+                if n1 > 0 and n2 > 0:
+                    mean1 = np.mean(v1)
+                    mean2 = np.mean(v2)
+                    meandiff = mean1 - mean2
+                    
+                    # Standard error of difference using FULL MODEL MSE
+                    se = np.sqrt((mse_full / 2.0) * (1.0 / n1 + 1.0 / n2))
+                    if se == 0:
+                        se = 1e-6  # safeguard
+                        
+                    q_stat = abs(meandiff) / se
+                    p_adj = stats.studentized_range.sf(q_stat, k_levels, df_err)
+                    
+                    # CI bounds
+                    ci_half = q_crit * se
+                    lower = meandiff - ci_half
+                    upper = meandiff + ci_half
+                    reject = bool(p_adj < alpha)
+                    
+                    # Format group names for display
+                    if compare_factor == "Concentration":
+                        lbl1 = "Control" if val1 == 0.0 else f"{val1} g/L"
+                        lbl2 = "Control" if val2 == 0.0 else f"{val2} g/L"
+                    else:
+                        lbl1 = str(val1)
+                        lbl2 = str(val2)
+                        
+                    results[g_key].append({
+                        "comparison": f"{lbl1} vs {lbl2}",
+                        "group1": lbl1,
+                        "group2": lbl2,
+                        "meandiff": round(float(meandiff), 4),
+                        "p_adj": round(float(p_adj), 6),
+                        "lower": round(float(lower), 4),
+                        "upper": round(float(upper), 4),
+                        "reject": reject
+                    })
+                    
+    # Prepare selector values (keys of results that actually have comparisons)
+    selector_values = sorted([k for k, v in results.items() if len(v) > 0])
+    # If group factor is Concentration, we sort them numerically with Control first
+    if group_factor == "Concentration":
+        def sort_key(label):
+            if label == "Control":
+                return 0.0
+            try:
+                return float(label.replace(" g/L", "").strip())
+            except ValueError:
+                return 9999.0
+        selector_values = sorted(selector_values, key=sort_key)
+        
+    return {
+        "selector_type": group_factor.lower(),
+        "selector_values": selector_values,
+        "results": results
+    }
 
-    data = request.args if request.method == "GET" else request.get_json(silent=True)
-    if not data:
-        data = request.form
+def run_two_way_analysis(crop, variable, day, selected_biochars_raw, control_mode, alpha_input):
+    import scipy.stats as stats
+    import numpy as np
+    import statsmodels.api as sm
+    from statsmodels.formula.api import ols
+    import pandas as pd
 
-    crop = data.get("crop")
-    variable = data.get("variable")
-    day = data.get("day")
+    alpha = validate_alpha(alpha_input)
 
-    # Parse and validate alpha (nominal significance level)
-    alpha = validate_alpha(data.get("alpha", "0.05"))
-
-    # Filter master dataframe
-    df_filtered = FLAT_DF.copy()
-    df_filtered = df_filtered[df_filtered["Crop"] == crop]
-    df_filtered = df_filtered[df_filtered["Variable"] == variable]
-    df_filtered = df_filtered[df_filtered["Day"] == day]
+    # Filter master dataframe efficiently in one pass
+    df_filtered = FLAT_DF[
+        (FLAT_DF["Crop"] == crop) &
+        (FLAT_DF["Variable"] == variable) &
+        (FLAT_DF["Day"] == day)
+    ].copy()
 
     if df_filtered.empty:
-        return jsonify({"status": "error", "message": f"No data found for Crop={crop}, Variable={variable}, Day={day}"}), 400
+        raise ValueError(f"No data found for Crop={crop}, Variable={variable}, Day={day}")
 
     # Separate Control and Treatment biochars
     controls = df_filtered[df_filtered["Biochar"] == "Control"].copy()
     treatments = df_filtered[df_filtered["Biochar"] != "Control"].copy()
 
     if treatments.empty:
-        return jsonify({"status": "error", "message": "No treatment biochar groups found for Two-Way ANOVA."}), 400
+        raise ValueError("No treatment biochar species found for Two-Way ANOVA.")
+
+    # Retrieve selected biochars parameter
+    selected_biochars = []
+    if selected_biochars_raw:
+        if isinstance(selected_biochars_raw, list):
+            selected_biochars = selected_biochars_raw
+        else:
+            selected_biochars = [b.strip() for b in selected_biochars_raw.split(",") if b.strip()]
+        if selected_biochars:
+            treatments = treatments[treatments["Biochar"].isin(selected_biochars)]
 
     unique_biochars = sorted(treatments["Biochar"].unique().tolist())
-    
-    # Replicate Control (concentration 0.0) into each treatment biochar
-    replicated_controls = []
-    for b in unique_biochars:
-        ctrl_copy = controls.copy()
-        ctrl_copy["Biochar"] = b
-        replicated_controls.append(ctrl_copy)
 
-    combined_df = pd.concat([treatments] + replicated_controls, ignore_index=True)
-    combined_df = combined_df.dropna(subset=["Value"])
+    if len(unique_biochars) < 2:
+        raise ValueError(f"Insufficient treatment biochar species selected (minimum 2 required). Found: {len(unique_biochars)}")
+    
+    # Parse control handling mode
+    if control_mode not in ["replicated", "exclude"]:
+        control_mode = "replicated"
+
+    if control_mode == "exclude":
+        combined_df = treatments.dropna(subset=["Value"])
+        control_mode_label = "Exclude Shared Control"
+    else:
+        # Replicate Control (concentration 0.0) into each treatment biochar
+        replicated_controls = []
+        for b in unique_biochars:
+            ctrl_copy = controls.copy()
+            ctrl_copy["Biochar"] = b
+            replicated_controls.append(ctrl_copy)
+
+        combined_df = pd.concat([treatments] + replicated_controls, ignore_index=True)
+        combined_df = combined_df.dropna(subset=["Value"])
+        control_mode_label = "Include Independent Controls (Default)"
     
     # Ensure Concentration is treated as a float/numeric and then categorical
     combined_df["Concentration"] = combined_df["Concentration"].astype(float)
     
     # Ensure we have enough levels to fit Two-Way ANOVA
-    n_unique_concs = len(combined_df["Concentration"].unique())
+    unique_concs = sorted(combined_df["Concentration"].unique().tolist())
+    n_unique_concs = len(unique_concs)
     n_unique_biochars = len(combined_df["Biochar"].unique())
     
     if n_unique_concs < 2 or n_unique_biochars < 2:
-        return jsonify({
-            "status": "error", 
-            "message": f"Insufficient factor levels for Two-Way ANOVA. Concs count: {n_unique_concs}, Biochars count: {n_unique_biochars}"
-        }), 400
-
-    # ---------------------------
-    # TWO-WAY TYPE III ANOVA OLS
-    # ---------------------------
-    import statsmodels.api as sm
-    from statsmodels.formula.api import ols
-    import scipy.stats as stats
-    import numpy as np
+        raise ValueError(f"Insufficient factor levels for Two-Way ANOVA. Concentrations count: {n_unique_concs}, Biochar Species count: {n_unique_biochars}")
 
     # Fit OLS model with explicit Sum contrasts for both Biochar and Concentration
     model_formula = 'Value ~ C(Biochar, Sum) * C(Concentration, Sum)'
-    model = ols(model_formula, data=combined_df).fit()
+    try:
+        model = ols(model_formula, data=combined_df).fit()
+    except Exception as fit_err:
+        raise ValueError(f"Failed to fit the Two-Way ANOVA model: {str(fit_err)}. This usually occurs due to insufficient replication or collinearity in the selected data.")
+    
+    if model.df_resid <= 0:
+        raise ValueError("Insufficient replication to perform Two-Way ANOVA. The experimental design leaves 0 degrees of freedom for residuals. Please select more biochar species or check your replication settings.")
     
     # Compute Type III ANOVA
     anova_table = sm.stats.anova_lm(model, typ=3)
@@ -742,15 +855,13 @@ def api_two_way():
             "p_value": round(float(p_val), 6) if p_val is not None else "-"
         }
         
-    # Degrees of freedom validation check: df_A + df_B + df_AB + df_error = N - 1
+    # Degrees of freedom validation check
     N = len(combined_df)
     df_total_expected = N - 1
-    
     df_A = table_dict.get("C(Biochar, Sum)", {}).get("df", 0)
     df_B = table_dict.get("C(Concentration, Sum)", {}).get("df", 0)
     df_AB = table_dict.get("C(Biochar, Sum):C(Concentration, Sum)", {}).get("df", 0)
     df_error = table_dict.get("Residual", {}).get("df", 0)
-    
     df_sum = df_A + df_B + df_AB + df_error
     df_verified = (df_sum == df_total_expected)
     
@@ -758,90 +869,108 @@ def api_two_way():
     p_val_AB = anova_table.loc["C(Biochar, Sum):C(Concentration, Sum)", "PR(>F)"]
     interaction_significant = bool(p_val_AB < alpha) if not pd.isna(p_val_AB) else False
 
-    # 2. Cell Means Grid calculation (Biochar x Concentration)
+    # Shapiro-Wilk Test
+    residuals = model.resid
+    n_residuals = len(residuals)
+    if n_residuals >= 3:
+        try:
+            import warnings
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                sh_stat, sh_p = stats.shapiro(residuals)
+            
+            shapiro_result = {
+                "statistic": round(float(sh_stat), 4),
+                "p_value": round(float(sh_p), 6),
+                "normal": bool(sh_p >= alpha),
+                "note": None
+            }
+            if len(w) > 0 and any("p-value may not be accurate" in str(warn.message) for warn in w):
+                shapiro_result["note"] = "SciPy warning: p-value may not be accurate for very large samples."
+        except Exception as sh_err:
+            shapiro_result = {
+                "statistic": None,
+                "p_value": None,
+                "normal": None,
+                "note": f"Shapiro-Wilk error: {str(sh_err)}"
+            }
+    else:
+        shapiro_result = {
+            "statistic": None,
+            "p_value": None,
+            "normal": None,
+            "note": f"N < 3 (only {n_residuals} residuals available)"
+        }
+
+    # Group data in a single pass to collect statistics and Levene's groups
+    stats_dict = {}
+    levene_groups = []
+    for (b, c), cell_gp in combined_df.groupby(["Biochar", "Concentration"]):
+        vals = cell_gp["Value"].dropna().tolist()
+        n = len(vals)
+        if n > 0:
+            mean = float(np.mean(vals))
+            sd = float(np.std(vals, ddof=1)) if n > 1 else 0.0
+            stats_dict[(b, float(c))] = {"N": n, "Mean": mean, "SD": sd}
+            levene_groups.append(vals)
+
+    # Levene's Test
+    if len(levene_groups) >= 2:
+        try:
+            lev_stat, lev_p = stats.levene(*levene_groups, center='median')
+            levene_result = {
+                "statistic": round(float(lev_stat), 4),
+                "p_value": round(float(lev_p), 6),
+                "equal_variance": bool(lev_p >= alpha),
+                "note": None
+            }
+        except Exception as lev_err:
+            levene_result = {
+                "statistic": None,
+                "p_value": None,
+                "equal_variance": None,
+                "note": f"Levene's error: {str(lev_err)}"
+            }
+    else:
+        levene_result = {
+            "statistic": None,
+            "p_value": None,
+            "equal_variance": None,
+            "note": "Insufficient groups (at least 2 groups required)"
+        }
+
+    # Cell Means Grid
     cell_means = []
-    unique_concs = sorted(combined_df["Concentration"].unique().tolist())
-    
     for b in unique_biochars:
         bio_row = {"Biochar": b}
         for c in unique_concs:
-            cell_data = combined_df[(combined_df["Biochar"] == b) & (combined_df["Concentration"] == c)]["Value"]
-            n = len(cell_data)
-            if n > 0:
-                # Zero variance protection for cells
-                mean = np.mean(cell_data)
-                sd = np.std(cell_data, ddof=1) if n > 1 else 0
+            cf = float(c)
+            cell_info = stats_dict.get((b, cf))
+            if cell_info:
                 bio_row[str(c)] = {
-                    "N": n,
-                    "Mean": round(float(mean), 4),
-                    "SD": round(float(sd), 4)
+                    "N": cell_info["N"],
+                    "Mean": round(cell_info["Mean"], 4),
+                    "SD": round(cell_info["SD"], 4)
                 }
             else:
                 bio_row[str(c)] = {"N": 0, "Mean": "-", "SD": "-"}
         cell_means.append(bio_row)
 
-    # 3. Simple Main Effects Post-Hoc Tukey HSD
-    # We compare concentrations within each biochar type.
-    # MSE and df_error from the full model
+    # Simple Main Effects
     mse_full = table_dict.get("Residual", {}).get("MS", 0)
     df_err = table_dict.get("Residual", {}).get("df", 0)
-    
-    posthoc_results = {}
-    
-    for b in unique_biochars:
-        posthoc_results[b] = []
-        df_b = combined_df[combined_df["Biochar"] == b]
-        
-        # Unique concentrations within this biochar
-        concs_b = sorted(df_b["Concentration"].unique().tolist())
-        c_levels = len(concs_b)
-        
-        # Calculate critical Q-value using studentized range
-        q_crit = stats.studentized_range.ppf(1.0 - alpha, c_levels, df_err)
-        
-        # Perform pairwise comparisons
-        for i in range(len(concs_b)):
-            for j in range(i + 1, len(concs_b)):
-                c1 = concs_b[i]
-                c2 = concs_b[j]
-                
-                v1 = df_b[df_b["Concentration"] == c1]["Value"].tolist()
-                v2 = df_b[df_b["Concentration"] == c2]["Value"].tolist()
-                
-                n1 = len(v1)
-                n2 = len(v2)
-                
-                mean1 = np.mean(v1)
-                mean2 = np.mean(v2)
-                meandiff = mean1 - mean2
-                
-                # Standard error of difference using FULL MODEL MSE
-                # SE = sqrt( MSE_full / 2 * (1/n1 + 1/n2) )
-                if n1 > 0 and n2 > 0:
-                    se = np.sqrt((mse_full / 2.0) * (1.0 / n1 + 1.0 / n2))
-                    if se == 0:
-                        se = 1e-6  # safeguard
-                    
-                    q_stat = abs(meandiff) / se
-                    p_adj = stats.studentized_range.sf(q_stat, c_levels, df_err)
-                    
-                    # CI bounds
-                    ci_half = q_crit * se
-                    lower = meandiff - ci_half
-                    upper = meandiff + ci_half
-                    reject = bool(p_adj < alpha)
-                    
-                    posthoc_results[b].append({
-                        "group1": f"{c1} g/L" if c1 > 0 else "Control",
-                        "group2": f"{c2} g/L" if c2 > 0 else "Control",
-                        "meandiff": round(float(meandiff), 4),
-                        "p_adj": round(float(p_adj), 6),
-                        "lower": round(float(lower), 4),
-                        "upper": round(float(upper), 4),
-                        "reject": reject
-                    })
 
-    # Prepare debug details
+    sme_within_biochar = calculate_simple_main_effects(combined_df, "Biochar", "Concentration", mse_full, df_err, alpha)
+    sme_within_concentration = calculate_simple_main_effects(combined_df, "Concentration", "Biochar", mse_full, df_err, alpha)
+
+    simple_main_effects = {
+        "within_biochar": sme_within_biochar,
+        "within_concentration": sme_within_concentration
+    }
+    
+    posthoc_results = sme_within_biochar["results"]
+
+    # Debug details
     debug_details = {
         "factor_levels": {
             "Biochar": unique_biochars,
@@ -867,17 +996,17 @@ def api_two_way():
         }
     }
 
-    # Format interaction plot means for frontend Chart.js line plot
-    # A line per biochar, X-axis concentrations, Y-axis mean values
+    # Interaction plot means
     interaction_plot_data = {}
     for b in unique_biochars:
         interaction_plot_data[b] = []
         for c in unique_concs:
-            cell_data = combined_df[(combined_df["Biochar"] == b) & (combined_df["Concentration"] == c)]["Value"]
-            if not cell_data.empty:
+            cf = float(c)
+            cell_info = stats_dict.get((b, cf))
+            if cell_info:
                 interaction_plot_data[b].append({
                     "x": c,
-                    "y": round(float(np.mean(cell_data)), 4)
+                    "y": round(cell_info["Mean"], 4)
                 })
 
     response = {
@@ -885,17 +1014,48 @@ def api_two_way():
         "crop": crop,
         "variable": variable,
         "day": day,
+        "control_mode": control_mode,
+        "control_mode_label": control_mode_label,
         "anova_table": table_dict,
         "df_verified": bool(df_verified),
         "interaction_significant": interaction_significant,
+        "shapiro_results": shapiro_result,
+        "levene_result": levene_result,
         "cell_means": cell_means,
         "posthoc_results": posthoc_results,
+        "simple_main_effects": simple_main_effects,
         "interaction_plot_data": interaction_plot_data,
         "alpha": alpha,
         "debug_details": debug_details
     }
     
-    return jsonify(response)
+    return response, combined_df
+
+@app.route("/api/two-way", methods=["POST", "GET"])
+def api_two_way():
+    if FLAT_DF is None:
+        return jsonify({"status": "error", "message": "Data pipeline not initialized"}), 500
+
+    data = request.args if request.method == "GET" else request.get_json(silent=True)
+    if not data:
+        data = request.form
+
+    crop = data.get("crop")
+    variable = data.get("variable")
+    day = data.get("day")
+    alpha = data.get("alpha", "0.05")
+    selected_biochars_raw = data.get("biochars")
+    control_mode = data.get("control_mode", "replicated")
+
+    try:
+        response, _ = run_two_way_analysis(crop, variable, day, selected_biochars_raw, control_mode, alpha)
+        return jsonify(response)
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": f"Analysis failed: {str(e)}"}), 500
 
 @app.route("/api/export-excel", methods=["POST"])
 def export_excel():
@@ -1342,6 +1502,628 @@ def export_excel():
             download_name=filename
         )
 
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": f"Excel generation failed: {str(e)}"}), 500
+
+@app.route("/api/export-excel-twoway", methods=["POST"])
+def export_excel_twoway():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "No parameters provided"}), 400
+
+        crop = data.get("crop")
+        variable = data.get("variable")
+        day = data.get("day")
+        alpha = data.get("alpha", "0.05")
+        selected_biochars_raw = data.get("biochars")
+        control_mode = data.get("control_mode", "replicated")
+
+        # Run internal analysis
+        response_dict, combined_df = run_two_way_analysis(crop, variable, day, selected_biochars_raw, control_mode, alpha)
+        
+        # Build Workbook
+        wb = openpyxl.Workbook()
+        
+        # Styles
+        font_title = Font(name="Arial", size=14, bold=True, color="1B5E20")  # Forest Green
+        font_header = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+        font_bold = Font(name="Arial", size=11, bold=True)
+        font_regular = Font(name="Arial", size=10)
+        
+        fill_header = PatternFill(start_color="343A40", end_color="343A40", fill_type="solid")
+        fill_light = PatternFill(start_color="F8F9FA", end_color="F8F9FA", fill_type="solid")
+        fill_sig = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid")
+        
+        thin_side = Side(border_style="thin", color="D3D3D3")
+        border_all = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+        
+        align_center = Alignment(horizontal="center", vertical="center")
+        align_left = Alignment(horizontal="left", vertical="center")
+        align_right = Alignment(horizontal="right", vertical="center")
+        
+        def clean_p_value_format(p):
+            if p is None or p == "-" or p == "N/A":
+                return "N/A"
+            try:
+                p_val = float(p)
+            except (ValueError, TypeError):
+                return str(p)
+            if p_val < 0.0001:
+                return "< 0.0001"
+            return f"{p_val:.4f}"
+            
+        def style_cell(cell, font=font_regular, fill=None, border=border_all, alignment=None, num_format=None):
+            if font: cell.font = font
+            if fill: cell.fill = fill
+            if border: cell.border = border
+            if alignment: cell.alignment = alignment
+            if num_format: cell.number_format = num_format
+
+        # Helper to get unique biochars & concentrations
+        unique_biochars = response_dict["debug_details"]["factor_levels"]["Biochar"]
+        unique_concs = response_dict["debug_details"]["factor_levels"]["Concentration"]
+        
+        # 1. Sheet 1: Summary
+        ws1 = wb.active
+        ws1.title = "Analysis Summary"
+        ws1.views.sheetView[0].showGridLines = True
+        
+        ws1.cell(row=1, column=1, value="Two-Way ANOVA Analysis Summary").font = font_title
+        ws1.row_dimensions[1].height = 25
+        
+        headers = ["Parameter", "Value"]
+        for col_num, h in enumerate(headers, 1):
+            cell = ws1.cell(row=3, column=col_num, value=h)
+            style_cell(cell, font=font_header, fill=fill_header, alignment=align_center)
+            
+        # Analysis Design description
+        design_type = "Treatment-only Factorial" if control_mode == "exclude" else "Complete Factorial"
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        summary_rows = [
+            ("Crop", crop),
+            ("Variable", variable),
+            ("Day", day),
+            ("Factor A (Independent)", "Biochar Species"),
+            ("Factor B (Independent)", "Concentration"),
+            ("Selected Biochar Species", ", ".join(unique_biochars)),
+            ("Number of Biochar Species", len(unique_biochars)),
+            ("Control Handling Mode", response_dict["control_mode_label"]),
+            ("Experimental Design", design_type),
+            ("Significance Level (α)", response_dict["alpha"]),
+            ("Export Timestamp", timestamp),
+            ("Software Version", "v1.7.0")
+        ]
+        
+        for idx, (field, val) in enumerate(summary_rows, 4):
+            c_f = ws1.cell(row=idx, column=1, value=field)
+            style_cell(c_f, font=font_bold, fill=fill_light)
+            
+            c_v = ws1.cell(row=idx, column=2, value=val)
+            style_cell(c_v, font=font_regular, alignment=align_left)
+            if idx % 2 == 1:
+                c_v.fill = fill_light
+
+        # Scientific Interpretation block
+        p_A = response_dict["anova_table"].get("C(Biochar, Sum)", {}).get("p_value", 1.0)
+        p_B = response_dict["anova_table"].get("C(Concentration, Sum)", {}).get("p_value", 1.0)
+        p_AB = response_dict["anova_table"].get("C(Biochar, Sum):C(Concentration, Sum)", {}).get("p_value", 1.0)
+        
+        sigA = p_A != "-" and p_A < float(alpha)
+        sigB = p_B != "-" and p_B < float(alpha)
+        sigAB = p_AB != "-" and p_AB < float(alpha)
+        
+        strA = f"Significant (p = {p_A:.4f})" if sigA else (f"Not Significant (p = {p_A:.4f})" if isinstance(p_A, (int, float)) else f"Not Significant ({p_A})")
+        strB = f"Significant (p = {p_B:.4f})" if sigB else (f"Not Significant (p = {p_B:.4f})" if isinstance(p_B, (int, float)) else f"Not Significant ({p_B})")
+        strAB = f"Significant (p = {p_AB:.4f})" if sigAB else (f"Not Significant (p = {p_AB:.4f})" if isinstance(p_AB, (int, float)) else f"Not Significant ({p_AB})")
+        
+        summary_text = (
+            f"Scientific Inference Summary:\n"
+            f"• Factor A (Biochar Species): {strA}. Biochar species differ in their general effect.\n"
+            f"• Factor B (Concentration): {strB}. Concentrations differ in their general effect.\n"
+            f"• Interaction (Biochar Species × Concentration): {strAB}. The response curves are {'non-parallel' if sigAB else 'parallel'}.\n\n"
+        )
+        if sigAB:
+            summary_text += (
+                f"Scientific Interpretation Rule: Because the interaction effect is statistically significant (p < {alpha}), "
+                f"you cannot interpret the main effects of Biochar Species or Concentration directly. Focus instead on the "
+                f"Post-hoc Analysis of Simple Main Effects (Tukey HSD) comparisons shown in this report."
+            )
+        else:
+            summary_text += (
+                f"Scientific Interpretation Rule: Because the interaction effect is not significant, the main effects can be "
+                f"interpreted directly. Main effects indicate consistent trends across all groups."
+            )
+            
+        start_row_inf = 4 + len(summary_rows) + 2
+        ws1.cell(row=start_row_inf, column=1, value="Scientific Interpretation Summary").font = font_bold
+        c_inf = ws1.cell(row=start_row_inf + 1, column=1, value=summary_text)
+        style_cell(c_inf, font=font_regular, alignment=Alignment(wrap_text=True, vertical="top"))
+        ws1.merge_cells(start_row=start_row_inf + 1, start_column=1, end_row=start_row_inf + 6, end_column=5)
+        for r in range(start_row_inf + 1, start_row_inf + 7):
+            for c in range(1, 6):
+                ws1.cell(row=r, column=c).border = border_all
+        ws1.freeze_panes = "A4"
+
+        # 2. Sheet 2: Experimental Design
+        ws2 = wb.create_sheet(title="Experimental Design")
+        ws2.views.sheetView[0].showGridLines = True
+        ws2.cell(row=1, column=1, value="Experimental Design Summary").font = font_title
+        
+        for col_num, h in enumerate(headers, 1):
+            cell = ws2.cell(row=3, column=col_num, value=h)
+            style_cell(cell, font=font_header, fill=fill_header, alignment=align_center)
+            
+        cell_sizes = [len(combined_df[(combined_df["Biochar"] == b) & (combined_df["Concentration"] == c)]) for b in unique_biochars for c in unique_concs]
+        if len(cell_sizes) > 0:
+            min_size = min(cell_sizes)
+            max_size = max(cell_sizes)
+            replicates_str = str(min_size) if min_size == max_size else f"{min_size} - {max_size} (Unbalanced Design)"
+        else:
+            replicates_str = "0"
+            
+        design_rows = [
+            ("Factor A (Independent)", "Biochar Species"),
+            ("Factor B (Independent)", "Concentration"),
+            ("Active Biochar Species", ", ".join(unique_biochars)),
+            ("Active Concentration Levels", ", ".join([("Control" if c == 0.0 else f"{c} g/L") for c in unique_concs])),
+            ("Number of Replicates", replicates_str),
+            ("Total Observations", len(combined_df)),
+            ("Control Handling Mode", response_dict["control_mode_label"])
+        ]
+        
+        for idx, (field, val) in enumerate(design_rows, 4):
+            c_f = ws2.cell(row=idx, column=1, value=field)
+            style_cell(c_f, font=font_bold, fill=fill_light)
+            
+            c_v = ws2.cell(row=idx, column=2, value=val)
+            style_cell(c_v, font=font_regular, alignment=align_left)
+            if idx % 2 == 1:
+                c_v.fill = fill_light
+        ws2.freeze_panes = "A4"
+
+        # 3. Sheet 3: Cell Means Matrix
+        ws3 = wb.create_sheet(title="Cell Means Matrix")
+        ws3.views.sheetView[0].showGridLines = True
+        ws3.cell(row=1, column=1, value="Cell Replication & Means Matrix (Biochar Species × Concentration)").font = font_title
+        
+        ws3.cell(row=3, column=1, value="Biochar Species").font = font_header
+        ws3.cell(row=3, column=1).fill = fill_header
+        ws3.cell(row=3, column=1).alignment = align_center
+        ws3.cell(row=3, column=1).border = border_all
+        
+        for idx, c in enumerate(unique_concs, 2):
+            c_lbl = "Control" if c == 0.0 else f"{c} g/L"
+            cell = ws3.cell(row=3, column=idx, value=c_lbl)
+            style_cell(cell, font=font_header, fill=fill_header, alignment=align_center)
+            
+        # Data rows
+        for row_idx, r_data in enumerate(response_dict["cell_means"], 4):
+            ws3.row_dimensions[row_idx].height = 42
+            c_bio = ws3.cell(row=row_idx, column=1, value=r_data["Biochar"])
+            style_cell(c_bio, font=font_bold, alignment=align_left)
+            if row_idx % 2 == 1:
+                c_bio.fill = fill_light
+                
+            for col_idx, c in enumerate(unique_concs, 2):
+                c_str = str(float(c))
+                cell_info = r_data.get(c_str)
+                if not cell_info:
+                    c_str_alt = f"{float(c):.1f}"
+                    cell_info = r_data.get(c_str_alt)
+                if not cell_info:
+                    cell_info = r_data.get(str(c))
+                    
+                cell = ws3.cell(row=row_idx, column=col_idx)
+                
+                if cell_info and cell_info.get("N", 0) > 0:
+                    val_str = f"{cell_info['Mean']:.4f}\nSD: {cell_info['SD']:.4f}\n(N={cell_info['N']})"
+                    cell.value = val_str
+                    style_cell(cell, font=font_regular, alignment=Alignment(horizontal="center", vertical="center", wrap_text=True))
+                else:
+                    cell.value = "-"
+                    style_cell(cell, font=font_regular, alignment=align_center)
+                    
+                if row_idx % 2 == 1:
+                    cell.fill = fill_light
+        ws3.freeze_panes = "A4"
+
+        # 4. Sheet 4: Type III ANOVA
+        ws4 = wb.create_sheet(title="Type III ANOVA")
+        ws4.views.sheetView[0].showGridLines = True
+        ws4.cell(row=1, column=1, value="Type III ANOVA Table (For Unbalanced Designs)").font = font_title
+        
+        anova_headers = ["Source of Variation", "Sum Sq (SS)", "df", "Mean Sq (MS)", "F-value", "p-value", "Sig."]
+        for col_num, h in enumerate(anova_headers, 1):
+            cell = ws4.cell(row=3, column=col_num, value=h)
+            style_cell(cell, font=font_header, fill=fill_header, alignment=align_center)
+            
+        key_labels = {
+            "Intercept": "Intercept",
+            "C(Biochar, Sum)": "Biochar Species (Factor A)",
+            "C(Concentration, Sum)": "Concentration (Factor B)",
+            "C(Biochar, Sum):C(Concentration, Sum)": "Biochar Species & Concentration (Interaction)",
+            "Residual": "Error (Residuals)"
+        }
+        
+        calculatedTotalSS = 0
+        calculatedTotalDf = 0
+        
+        anova_data = response_dict["anova_table"]
+        row_idx = 4
+        for key, label in key_labels.items():
+            row_vals = anova_data.get(key)
+            if not row_vals:
+                continue
+                
+            ss = row_vals["SS"]
+            df = row_vals["df"]
+            ms = row_vals["MS"]
+            f_val = row_vals["F"]
+            p_val = row_vals["p_value"]
+            
+            if key != "Intercept":
+                calculatedTotalSS += ss
+                calculatedTotalDf += df
+                
+            sig_star = "ns"
+            if isinstance(p_val, (int, float)):
+                if p_val < 0.001: sig_star = "***"
+                elif p_val < 0.01: sig_star = "**"
+                elif p_val < 0.05: sig_star = "*"
+                else: sig_star = "ns"
+            elif p_val == "-":
+                sig_star = "-"
+                
+            p_formatted = clean_p_value_format(p_val)
+            
+            ws4.cell(row=row_idx, column=1, value=label).font = font_bold
+            ws4.cell(row=row_idx, column=2, value=ss)
+            ws4.cell(row=row_idx, column=3, value=df)
+            ws4.cell(row=row_idx, column=4, value=ms)
+            
+            f_cell = ws4.cell(row=row_idx, column=5, value=f_val)
+            p_cell = ws4.cell(row=row_idx, column=6, value=p_formatted)
+            ws4.cell(row=row_idx, column=7, value=sig_star).alignment = align_center
+            
+            for c_idx in range(1, 8):
+                cell = ws4.cell(row=row_idx, column=c_idx)
+                cell.border = border_all
+                if c_idx != 1:
+                    cell.font = font_regular
+                    if c_idx in [2, 3, 4, 5, 6]:
+                        cell.alignment = align_right
+                        if c_idx in [2, 4] or (c_idx == 5 and isinstance(f_val, (int, float))):
+                            cell.number_format = "0.0000"
+            row_idx += 1
+            
+        # Total Row
+        ws4.cell(row=row_idx, column=1, value="Total (Corrected)").font = font_bold
+        ws4.cell(row=row_idx, column=2, value=calculatedTotalSS)
+        ws4.cell(row=row_idx, column=3, value=calculatedTotalDf)
+        
+        for c_idx in range(1, 8):
+            cell = ws4.cell(row=row_idx, column=c_idx)
+            cell.border = border_all
+            cell.fill = fill_light
+            if c_idx != 1:
+                cell.font = font_regular
+                if c_idx in [2, 3]:
+                    cell.alignment = align_right
+                    if c_idx == 2:
+                        cell.number_format = "0.0000"
+                        
+        # Append inference summary text below
+        start_row_inf_anova = row_idx + 3
+        ws4.cell(row=start_row_inf_anova - 1, column=1, value="Scientific Inference Summary").font = font_bold
+        c_inf_anova = ws4.cell(row=start_row_inf_anova, column=1, value=summary_text)
+        style_cell(c_inf_anova, font=font_regular, alignment=Alignment(wrap_text=True, vertical="top"))
+        ws4.merge_cells(start_row=start_row_inf_anova, start_column=1, end_row=start_row_inf_anova + 5, end_column=7)
+        for r in range(start_row_inf_anova, start_row_inf_anova + 6):
+            for c in range(1, 8):
+                ws4.cell(row=r, column=c).border = border_all
+        ws4.freeze_panes = "A4"
+
+        # 5. Sheet 5: Assumption Diagnostics
+        ws5 = wb.create_sheet(title="Assumption Diagnostics")
+        ws5.views.sheetView[0].showGridLines = True
+        ws5.cell(row=1, column=1, value="Homogeneity of Variance (Levene's Test)").font = font_title
+        
+        levene_data = response_dict["levene_result"]
+        lev_stat = levene_data.get("statistic")
+        lev_p = levene_data.get("p_value")
+        lev_met = levene_data.get("equal_variance")
+        
+        lev_p_formatted = clean_p_value_format(lev_p)
+        
+        if lev_met is None:
+            lev_dec = "N/A"
+            lev_interp = levene_data.get("note", "Could not compute Levene's test.")
+        else:
+            lev_dec = "Assumption Met (Equal Variances)" if lev_met else "Assumption Violated (Variances unequal)"
+            lev_interp = "Variances appear sufficiently equal across all Biochar Species × Concentration cells." if lev_met else "Cell variances differ significantly. Two-Way ANOVA is robust to moderate variance differences when sample sizes are balanced, but interpretation should be cautious."
+            
+        ws5.cell(row=3, column=1, value="Levene Statistic").font = font_bold
+        ws5.cell(row=3, column=2, value=lev_stat).alignment = align_right
+        ws5.cell(row=3, column=2).number_format = "0.0000"
+        
+        ws5.cell(row=4, column=1, value="p-value").font = font_bold
+        ws5.cell(row=4, column=2, value=lev_p_formatted).alignment = align_right
+        
+        ws5.cell(row=5, column=1, value="Decision").font = font_bold
+        ws5.cell(row=5, column=2, value=lev_dec).alignment = align_left
+        
+        for r in range(3, 6):
+            ws5.cell(row=r, column=1).border = border_all
+            ws5.cell(row=r, column=1).fill = fill_light
+            ws5.cell(row=r, column=2).border = border_all
+            ws5.cell(row=r, column=2).font = font_regular
+            
+        ws5.cell(row=7, column=1, value="Scientific Interpretation:").font = font_bold
+        c_lev_text = ws5.cell(row=8, column=1, value=lev_interp)
+        style_cell(c_lev_text, font=font_regular, alignment=Alignment(wrap_text=True, vertical="top"))
+        ws5.merge_cells(start_row=8, start_column=1, end_row=9, end_column=5)
+        for r in range(8, 10):
+            for c in range(1, 6):
+                ws5.cell(row=r, column=c).border = border_all
+                
+        # Shapiro-Wilk Section
+        ws5.cell(row=11, column=1, value="Normality of Residuals (Shapiro-Wilk Test)").font = font_title
+        
+        shapiro_data = response_dict["shapiro_results"]
+        sh_stat = shapiro_data.get("statistic")
+        sh_p = shapiro_data.get("p_value")
+        sh_normal = shapiro_data.get("normal")
+        
+        sh_p_formatted = clean_p_value_format(sh_p)
+        
+        if sh_normal is None:
+            sh_dec = "N/A"
+            sh_interp = shapiro_data.get("note", "Could not compute normality check.")
+        else:
+            sh_dec = "Assumption Met (Normal Residuals)" if sh_normal else "Assumption Violated (Non-normal residuals)"
+            sh_interp = "Standard normality assumptions for the OLS model are met." if sh_normal else "Residuals deviate significantly from a normal distribution. While ANOVA is robust to mild deviations from normality with larger sample sizes, results should be interpreted with caution."
+            if shapiro_data.get("note"):
+                sh_interp += f"\nNote: {shapiro_data.get('note')}"
+                
+        ws5.cell(row=13, column=1, value="Shapiro-Wilk Statistic").font = font_bold
+        ws5.cell(row=13, column=2, value=sh_stat).alignment = align_right
+        ws5.cell(row=13, column=2).number_format = "0.0000"
+        
+        ws5.cell(row=14, column=1, value="p-value").font = font_bold
+        ws5.cell(row=14, column=2, value=sh_p_formatted).alignment = align_right
+        
+        ws5.cell(row=15, column=1, value="Decision").font = font_bold
+        ws5.cell(row=15, column=2, value=sh_dec).alignment = align_left
+        
+        for r in range(13, 16):
+            ws5.cell(row=r, column=1).border = border_all
+            ws5.cell(row=r, column=1).fill = fill_light
+            ws5.cell(row=r, column=2).border = border_all
+            ws5.cell(row=r, column=2).font = font_regular
+            
+        ws5.cell(row=17, column=1, value="Scientific Interpretation:").font = font_bold
+        c_sh_text = ws5.cell(row=18, column=1, value=sh_interp)
+        style_cell(c_sh_text, font=font_regular, alignment=Alignment(wrap_text=True, vertical="top"))
+        ws5.merge_cells(start_row=18, start_column=1, end_row=19, end_column=5)
+        for r in range(18, 20):
+            for c in range(1, 6):
+                ws5.cell(row=r, column=c).border = border_all
+        ws5.freeze_panes = "A4"
+
+        # 6. Sheet 6: Simple Main Effects
+        ws6 = wb.create_sheet(title="Simple Main Effects")
+        ws6.views.sheetView[0].showGridLines = True
+        ws6.cell(row=1, column=1, value="Post-hoc Analysis of Simple Main Effects (Tukey HSD)").font = font_title
+        
+        sme_data = response_dict["simple_main_effects"]
+        
+        # Section A: Concentrations within Biochar Species
+        ws6.cell(row=3, column=1, value="Section A: Compare Concentrations within Biochar Species").font = font_bold
+        
+        sme_headers = ["Group", "Comparison", "Mean Difference", "Adjusted p-value", "95% CI Lower", "95% CI Upper", "Significant?"]
+        for col_num, h in enumerate(sme_headers, 1):
+            cell = ws6.cell(row=4, column=col_num, value=h)
+            style_cell(cell, font=font_header, fill=fill_header, alignment=align_center)
+            
+        row_idx = 5
+        wb_results = sme_data.get("within_biochar", {}).get("results", {})
+        for g_key, comps in wb_results.items():
+            for comp in comps:
+                ws6.cell(row=row_idx, column=1, value=g_key).font = font_bold
+                comp_text = comp.get("comparison") or f"{comp.get('group1')} vs {comp.get('group2')}"
+                ws6.cell(row=row_idx, column=2, value=comp_text)
+                
+                md = comp.get("meandiff", 0.0)
+                ws6.cell(row=row_idx, column=3, value=md)
+                
+                p_adj = comp.get("p_adj")
+                p_adj_formatted = clean_p_value_format(p_adj)
+                ws6.cell(row=row_idx, column=4, value=p_adj_formatted)
+                
+                ws6.cell(row=row_idx, column=5, value=comp.get("lower", 0.0))
+                ws6.cell(row=row_idx, column=6, value=comp.get("upper", 0.0))
+                
+                reject = comp.get("reject", False)
+                sig_text = "Significant" if reject else "Not Significant"
+                ws6.cell(row=row_idx, column=7, value=sig_text)
+                
+                # Style row
+                for col_idx in range(1, 8):
+                    cell = ws6.cell(row=row_idx, column=col_idx)
+                    cell.border = border_all
+                    if col_idx != 1:
+                        cell.font = font_regular
+                        if col_idx in [3, 4, 5, 6]:
+                            cell.alignment = align_right
+                            if col_idx in [3, 5, 6]:
+                                cell.number_format = "0.0000"
+                        elif col_idx == 7:
+                            cell.alignment = align_center
+                            if reject:
+                                cell.fill = fill_sig
+                row_idx += 1
+                
+        # Section B: Biochar Species within Concentration
+        row_idx += 3
+        ws6.cell(row=row_idx, column=1, value="Section B: Compare Biochar Species within Concentration").font = font_bold
+        row_idx += 1
+        
+        for col_num, h in enumerate(sme_headers, 1):
+            cell = ws6.cell(row=row_idx, column=col_num, value=h)
+            style_cell(cell, font=font_header, fill=fill_header, alignment=align_center)
+            
+        row_idx += 1
+        wc_results = sme_data.get("within_concentration", {}).get("results", {})
+        for g_key, comps in wc_results.items():
+            for comp in comps:
+                ws6.cell(row=row_idx, column=1, value=g_key).font = font_bold
+                comp_text = comp.get("comparison") or f"{comp.get('group1')} vs {comp.get('group2')}"
+                ws6.cell(row=row_idx, column=2, value=comp_text)
+                
+                md = comp.get("meandiff", 0.0)
+                ws6.cell(row=row_idx, column=3, value=md)
+                
+                p_adj = comp.get("p_adj")
+                p_adj_formatted = clean_p_value_format(p_adj)
+                ws6.cell(row=row_idx, column=4, value=p_adj_formatted)
+                
+                ws6.cell(row=row_idx, column=5, value=comp.get("lower", 0.0))
+                ws6.cell(row=row_idx, column=6, value=comp.get("upper", 0.0))
+                
+                reject = comp.get("reject", False)
+                sig_text = "Significant" if reject else "Not Significant"
+                ws6.cell(row=row_idx, column=7, value=sig_text)
+                
+                # Style row
+                for col_idx in range(1, 8):
+                    cell = ws6.cell(row=row_idx, column=col_idx)
+                    cell.border = border_all
+                    if col_idx != 1:
+                        cell.font = font_regular
+                        if col_idx in [3, 4, 5, 6]:
+                            cell.alignment = align_right
+                            if col_idx in [3, 5, 6]:
+                                cell.number_format = "0.0000"
+                        elif col_idx == 7:
+                            cell.alignment = align_center
+                            if reject:
+                                cell.fill = fill_sig
+                row_idx += 1
+        ws6.freeze_panes = "A5"
+
+        # 7. Sheet 7: Interaction Plot Data
+        ws7 = wb.create_sheet(title="Interaction Plot Data")
+        ws7.views.sheetView[0].showGridLines = True
+        ws7.cell(row=1, column=1, value="Interaction Plot Data Summary").font = font_title
+        
+        plot_headers = ["Biochar Species", "Concentration", "Mean", "SD", "N"]
+        for col_num, h in enumerate(plot_headers, 1):
+            cell = ws7.cell(row=3, column=col_num, value=h)
+            style_cell(cell, font=font_header, fill=fill_header, alignment=align_center)
+            
+        grouped = combined_df.groupby(["Biochar", "Concentration"], as_index=False)["Value"].agg(["mean", "std", "count"])
+        grouped = grouped.sort_values(by=["Biochar", "Concentration"])
+        
+        for idx, r in enumerate(grouped.itertuples(index=False), 4):
+            b_val = r.Biochar
+            c_val = float(r.Concentration)
+            m_val = float(r.mean)
+            s_val = float(r.std) if pd.notnull(r.std) else 0.0
+            n_val = int(r.count)
+            
+            ws7.cell(row=idx, column=1, value=b_val).font = font_bold
+            ws7.cell(row=idx, column=2, value=c_val)
+            ws7.cell(row=idx, column=3, value=m_val)
+            ws7.cell(row=idx, column=4, value=s_val)
+            ws7.cell(row=idx, column=5, value=n_val)
+            
+            for c_idx in range(1, 6):
+                cell = ws7.cell(row=idx, column=c_idx)
+                cell.border = border_all
+                if cell.row % 2 == 1:
+                    cell.fill = fill_light
+                if c_idx != 1:
+                    cell.font = font_regular
+                    if c_idx in [2, 3, 4]:
+                        cell.alignment = align_right
+                        if c_idx in [3, 4]:
+                            cell.number_format = "0.0000"
+                        elif c_idx == 2:
+                            cell.number_format = "0.0"
+                    elif c_idx == 5:
+                        cell.alignment = align_center
+        ws7.freeze_panes = "A4"
+
+        # 8. Sheet 8: Analysis Dataset
+        ws8 = wb.create_sheet(title="Analysis Dataset")
+        ws8.views.sheetView[0].showGridLines = True
+        ws8.cell(row=1, column=1, value="Analysis Dataset (OLS Model Inputs)").font = font_title
+        
+        dataset_headers = ["Biochar Species", "Concentration", "Value"]
+        for col_num, h in enumerate(dataset_headers, 1):
+            cell = ws8.cell(row=3, column=col_num, value=h)
+            style_cell(cell, font=font_header, fill=fill_header, alignment=align_center)
+            
+        for idx, r in enumerate(combined_df.itertuples(index=False), 4):
+            ws8.cell(row=idx, column=1, value=r.Biochar).font = font_bold
+            ws8.cell(row=idx, column=2, value=float(r.Concentration))
+            ws8.cell(row=idx, column=3, value=float(r.Value))
+            
+            for c_idx in range(1, 4):
+                cell = ws8.cell(row=idx, column=c_idx)
+                cell.border = border_all
+                if cell.row % 2 == 1:
+                    cell.fill = fill_light
+                if c_idx != 1:
+                    cell.font = font_regular
+                    cell.alignment = align_right
+                    if c_idx == 2:
+                        cell.number_format = "0.0"
+                    elif c_idx == 3:
+                        cell.number_format = "0.0000"
+        ws8.freeze_panes = "A4"
+
+        # Auto-adjust column widths safely (skipping sheet titles)
+        for ws in wb.worksheets:
+            for col in ws.columns:
+                max_len = 0
+                col_letter = openpyxl.utils.get_column_letter(col[0].column)
+                for cell in col:
+                    if cell.row == 1:
+                        continue
+                    if cell.value is not None:
+                        val_str = str(cell.value)
+                        # Skip long interpretation sentences from auto-width
+                        if len(val_str) > 50:
+                            continue
+                        lines = val_str.split('\n')
+                        for line in lines:
+                            max_len = max(max_len, len(line))
+                ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+        # Save to memory
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        
+        # Filename formatting
+        safe_crop = str(crop).replace(" ", "")
+        safe_var = str(variable).replace(" ", "")
+        safe_day = str(day).replace(" ", "")
+        filename = f"TwoWayANOVA_{safe_crop}_{safe_var}_{safe_day}_{datetime.date.today().strftime('%Y-%m-%d')}.xlsx"
+        
+        return send_file(
+            output,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name=filename
+        )
+        
     except Exception as e:
         import traceback
         print(traceback.format_exc())

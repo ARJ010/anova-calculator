@@ -56,3 +56,9 @@ body {
     font-size: 0.9rem;
     color: #495057;
 }
+
+@media (min-width: 768px) {
+    .border-md-end {
+        border-right: 1px solid #dee2e6 !important;
+    }
+}
