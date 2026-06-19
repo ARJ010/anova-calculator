@@ -53,11 +53,25 @@ document.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll('input[name="graphMode"]').forEach(radio => {
         radio.addEventListener("change", (e) => {
             currentGraphMode = e.target.id === 'mode-pub' ? 'pub' : 'dist';
+            const themeContainer = document.getElementById("chart-theme-container");
+            if (themeContainer) {
+                themeContainer.style.display = currentGraphMode === 'pub' ? 'block' : 'none';
+            }
             if (lastOneWayData) {
                 drawOneWayScatterPlot(lastOneWayData);
             }
         });
     });
+
+    // Listen to changes in chart theme
+    const themeSelect = document.getElementById("chart-theme");
+    if (themeSelect) {
+        themeSelect.addEventListener("change", () => {
+            if (lastOneWayData && currentGraphMode === 'pub') {
+                drawOneWayScatterPlot(lastOneWayData);
+            }
+        });
+    }
 
     // Download chart button listener
     const downloadBtn = document.getElementById("download-oneway-chart");
@@ -660,6 +674,33 @@ function drawOneWayScatterPlot(data) {
         // Mode 2: Publication View (Bar Chart with Mean + SE)
         const meanValues = data.summary_stats.map(s => s.Mean);
 
+        // Curated modern academic themes mapping
+        const themes = {
+            slate: {
+                bg: 'rgba(74, 85, 104, 0.8)',
+                border: 'rgba(45, 55, 72, 1)'
+            },
+            sage: {
+                bg: 'rgba(76, 133, 90, 0.8)',
+                border: 'rgba(44, 79, 53, 1)'
+            },
+            teal: {
+                bg: 'rgba(40, 140, 137, 0.8)',
+                border: 'rgba(20, 80, 78, 1)'
+            },
+            terracotta: {
+                bg: 'rgba(210, 105, 80, 0.8)',
+                border: 'rgba(130, 50, 35, 1)'
+            },
+            indigo: {
+                bg: 'rgba(99, 102, 241, 0.8)',
+                border: 'rgba(67, 56, 202, 1)'
+            }
+        };
+
+        const selectedThemeKey = document.getElementById("chart-theme")?.value || "slate";
+        const selectedTheme = themes[selectedThemeKey] || themes.slate;
+
         activeOneWayChart = new Chart(ctx, {
             type: 'bar',
             data: {
@@ -668,8 +709,8 @@ function drawOneWayScatterPlot(data) {
                     {
                         label: 'Mean',
                         data: meanValues,
-                        backgroundColor: 'rgba(74, 85, 104, 0.8)', // clean academic slate gray
-                        borderColor: 'rgba(45, 55, 72, 1)', // charcoal border
+                        backgroundColor: selectedTheme.bg,
+                        borderColor: selectedTheme.border,
                         borderWidth: 1.5,
                         barPercentage: 0.5
                     }

@@ -235,6 +235,16 @@
                                         <input type="radio" class="btn-check" name="graphMode" id="mode-pub" autocomplete="off">
                                         <label class="btn btn-outline-success" for="mode-pub">Publication View</label>
                                     </div>
+                                    <!-- Chart Theme Selector -->
+                                    <div class="me-3" id="chart-theme-container" style="display: none;">
+                                        <select class="form-select form-select-sm" id="chart-theme" aria-label="Chart Theme" style="min-width: 140px;">
+                                            <option value="slate" selected>Slate Gray (Default)</option>
+                                            <option value="sage">Botanical Sage</option>
+                                            <option value="teal">Ocean Teal</option>
+                                            <option value="terracotta">Soil Terracotta</option>
+                                            <option value="indigo">Bio-Tech Indigo</option>
+                                        </select>
+                                    </div>
                                     <button type="button" id="download-oneway-chart" class="btn btn-sm btn-outline-success fw-bold">Download Graph (.png)</button>
                                     <button type="button" id="download-oneway-excel" class="btn btn-sm btn-outline-success fw-bold ms-2">Download Excel Report (.xlsx)</button>
                                 </div>
