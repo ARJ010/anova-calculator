@@ -565,6 +565,30 @@ class TestTwoWaySubsetSelection(unittest.TestCase):
         # Verify legacy posthoc_results is identical to simple_main_effects within_biochar
         self.assertEqual(data['posthoc_results'], wb['results'])
 
+        # Verify Two-Way simple main effects CLD letters are present and map selector values
+        self.assertIn('letters', wb)
+        self.assertIn('letters', wc)
+        self.assertIn('Acrostichum aureum', wb['letters'])
+        self.assertIn('Control', wc['letters'])
+        self.assertIn('Control', wb['letters']['Acrostichum aureum'])
+        self.assertIn('Acrostichum aureum', wc['letters']['Control'])
+
+        # Verify that the letters exactly match the output of the existing One-Way get_compact_letter_display() helper
+        from app import get_compact_letter_display
+        
+        # Reconstruct inputs for Acrostichum aureum from the response data
+        groups = []
+        group_means = {}
+        acrostichum_row = next(row for row in data['cell_means'] if row['Biochar'] == 'Acrostichum aureum')
+        for k, v in acrostichum_row.items():
+            if k != 'Biochar' and isinstance(v, dict) and v.get('Mean') != '-':
+                lbl = "Control" if float(k) == 0.0 else f"{k} g/L"
+                groups.append(lbl)
+                group_means[lbl] = float(v['Mean'])
+                
+        expected_letters = get_compact_letter_display(groups, wb['results']['Acrostichum aureum'], group_means)
+        self.assertEqual(wb['letters']['Acrostichum aureum'], expected_letters)
+
         # 2. Exclude shared control query
         resp_ex = self.client.get('/api/two-way?crop=Onion&variable=Root%20Length&day=Day%207&control_mode=exclude')
         self.assertEqual(resp_ex.status_code, 200)

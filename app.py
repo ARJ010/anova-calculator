@@ -658,6 +658,7 @@ def calculate_simple_main_effects(combined_df, group_factor, compare_factor, mse
     import numpy as np
     
     results = {}
+    letters_dict = {}
     
     # Unique groups of the grouping factor
     unique_groups = sorted(combined_df[group_factor].unique().tolist())
@@ -735,6 +736,22 @@ def calculate_simple_main_effects(combined_df, group_factor, compare_factor, mse
                         "reject": reject
                     })
                     
+        # Calculate CLD letters for this slice
+        group_means = {}
+        groups_list = []
+        for val in compare_levels:
+            if compare_factor == "Concentration":
+                lbl = "Control" if val == 0.0 else f"{val} g/L"
+            else:
+                lbl = str(val)
+            v_vals = df_g[df_g[compare_factor] == val]["Value"].tolist()
+            if len(v_vals) > 0:
+                group_means[lbl] = float(np.mean(v_vals))
+                groups_list.append(lbl)
+                
+        cld_letters = get_compact_letter_display(groups_list, results[g_key], group_means)
+        letters_dict[g_key] = cld_letters
+                    
     # Prepare selector values (keys of results that actually have comparisons)
     selector_values = sorted([k for k, v in results.items() if len(v) > 0])
     # If group factor is Concentration, we sort them numerically with Control first
@@ -751,7 +768,8 @@ def calculate_simple_main_effects(combined_df, group_factor, compare_factor, mse
     return {
         "selector_type": group_factor.lower(),
         "selector_values": selector_values,
-        "results": results
+        "results": results,
+        "letters": letters_dict
     }
 
 def run_two_way_analysis(crop, variable, day, selected_biochars_raw, control_mode, alpha_input):

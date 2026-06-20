@@ -29,6 +29,7 @@ function getChartImageWithWhiteBackground(chart) {
 let metadata = {};
 let activeOneWayChart = null;
 let activeTwoWayChart = null;
+let activeTwoWayBarChart = null;
 let twoWayPostHocData = {};
 let twoWaySMEData = null;
 let lastOneWayData = null;
@@ -50,12 +51,14 @@ document.addEventListener("DOMContentLoaded", () => {
     // Post-hoc selector for Two-Way Simple Main Effects
     document.getElementById("posthoc-biochar-select").addEventListener("change", (e) => {
         renderTwoWayPostHocTable(e.target.value);
+        drawTwoWaySMEBarPlot(lastTwoWayData);
     });
 
     const concSelectEl = document.getElementById("posthoc-concentration-select");
     if (concSelectEl) {
         concSelectEl.addEventListener("change", (e) => {
             renderTwoWayPostHocTable(e.target.value);
+            drawTwoWaySMEBarPlot(lastTwoWayData);
         });
     }
 
@@ -136,6 +139,54 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    // Download Two-Way Interaction Plot PNG
+    const downloadTwoWayChartBtn = document.getElementById("download-twoway-chart");
+    if (downloadTwoWayChartBtn) {
+        downloadTwoWayChartBtn.addEventListener("click", () => {
+            if (!activeTwoWayChart) return;
+            const crop = document.getElementById("crop").value;
+            const variable = document.getElementById("variable").value.replace(/\s+/g, "");
+            const day = document.getElementById("day").value.replace(/\s+/g, "");
+            
+            // Temporarily enable rendering of all SD error bars for export
+            activeTwoWayChart.showAllErrorBars = true;
+            activeTwoWayChart.update('none');
+            
+            const a = document.createElement("a");
+            a.download = `TwoWayInteraction_${crop}_${variable}_${day}.png`;
+            a.href = getChartImageWithWhiteBackground(activeTwoWayChart);
+            a.click();
+            
+            // Restore interactive hover-only mode immediately after
+            activeTwoWayChart.showAllErrorBars = false;
+            activeTwoWayChart.update('none');
+        });
+    }
+
+    // Download Two-Way SME Bar Chart PNG
+    const downloadTwoWaySmeChartBtn = document.getElementById("download-twoway-sme-chart");
+    if (downloadTwoWaySmeChartBtn) {
+        downloadTwoWaySmeChartBtn.addEventListener("click", () => {
+            if (!activeTwoWayBarChart) return;
+            const crop = document.getElementById("crop").value;
+            const variable = document.getElementById("variable").value.replace(/\s+/g, "");
+            const day = document.getElementById("day").value.replace(/\s+/g, "");
+            
+            const activeRadio = document.querySelector('input[name="twoway-posthoc-direction"]:checked');
+            const direction = activeRadio ? activeRadio.value : 'within_biochar';
+            const isWithinBiochar = (direction === 'within_biochar');
+            const key = isWithinBiochar
+                ? document.getElementById("posthoc-biochar-select").value
+                : document.getElementById("posthoc-concentration-select").value;
+            const safeKey = String(key).replace(/\s+/g, "");
+            
+            const a = document.createElement("a");
+            a.download = `TwoWaySME_${crop}_${variable}_${day}_${direction}_${safeKey}.png`;
+            a.href = getChartImageWithWhiteBackground(activeTwoWayBarChart);
+            a.click();
+        });
+    }
+
     // Listen to changes in graph view mode
     document.querySelectorAll('input[name="graphMode"]').forEach(radio => {
         radio.addEventListener("change", (e) => {
@@ -156,6 +207,16 @@ document.addEventListener("DOMContentLoaded", () => {
         colorPicker.addEventListener("input", () => {
             if (lastOneWayData && currentGraphMode === 'pub') {
                 drawOneWayScatterPlot(lastOneWayData);
+            }
+        });
+    }
+
+    // Listen to changes in Two-Way chart color picker
+    const twowayColorPicker = document.getElementById("twoway-chart-color");
+    if (twowayColorPicker) {
+        twowayColorPicker.addEventListener("input", () => {
+            if (lastTwoWayData) {
+                drawTwoWaySMEBarPlot(lastTwoWayData);
             }
         });
     }
@@ -758,10 +819,10 @@ function drawOneWayScatterPlot(data) {
     const minRepVal = replicateValues.length > 0 ? Math.min(...replicateValues) : 0;
     const maxRepVal = replicateValues.length > 0 ? Math.max(...replicateValues) : 10;
     
-    const meansWithSE = data.summary_stats.map(s => s.Mean + (s.SE !== undefined ? s.SE : 0));
-    const maxMeanWithSE = meansWithSE.length > 0 ? Math.max(...meansWithSE) : 10;
+    const meansWithSD = data.summary_stats.map(s => s.Mean + (s.SD !== undefined ? s.SD : 0));
+    const maxMeanWithSD = meansWithSD.length > 0 ? Math.max(...meansWithSD) : 10;
     
-    const overallMax = Math.max(maxRepVal, maxMeanWithSE);
+    const overallMax = Math.max(maxRepVal, maxMeanWithSD);
     const overallMin = minRepVal;
     const dataRange = overallMax - overallMin;
     const padding = dataRange * 0.1 || 1.0; // 10% padding
@@ -769,7 +830,7 @@ function drawOneWayScatterPlot(data) {
     const scatterYMin = Math.max(0, overallMin - padding);
     const scatterYMax = overallMax + padding;
     
-    const barYMax = maxMeanWithSE * 1.15 || 1.0;
+    const barYMax = maxMeanWithSD * 1.15 || 1.0;
 
     // Custom error bars plugin (attaches strictly to category centers)
     const errorBarsPlugin = {
@@ -797,35 +858,65 @@ function drawOneWayScatterPlot(data) {
                 const stat = data.summary_stats.find(s => formatGroupName(s.Group) === groupName);
                 if (!stat) return;
 
-                const se = stat.SE !== undefined ? stat.SE : 0;
-                if (se <= 0) return; // Skip if zero-variance / zero SE
-
-                const yMin = meanVal - se;
-                const yMax = meanVal + se;
-
+                const sd = stat.SD !== undefined ? stat.SD : 0;
+                const letter = (currentGraphMode === 'pub' && data.tukey_letters) ? data.tukey_letters[groupName] : null;
                 const canvasX = point.x;
-                const canvasYMin = y.getPixelForValue(yMin);
-                const canvasYMax = y.getPixelForValue(yMax);
 
-                // Draw vertical error bar line
-                ctx.beginPath();
-                ctx.moveTo(canvasX, canvasYMin);
-                ctx.lineTo(canvasX, canvasYMax);
-                ctx.stroke();
+                if (isBar && meanVal === 0.0) {
+                    // Flat zero bar in One-Way Publication View
+                    const canvasYZero = y.getPixelForValue(0);
 
-                // Draw horizontal caps
-                const capWidth = 6;
-                ctx.beginPath();
-                ctx.moveTo(canvasX - capWidth, canvasYMin);
-                ctx.lineTo(canvasX + capWidth, canvasYMin);
-                ctx.moveTo(canvasX - capWidth, canvasYMax);
-                ctx.lineTo(canvasX + capWidth, canvasYMax);
-                ctx.stroke();
+                    ctx.save();
+                    ctx.strokeStyle = meanDataset.borderColor;
+                    ctx.lineWidth = 3.0;
+                    ctx.beginPath();
+                    ctx.moveTo(canvasX - 15, canvasYZero);
+                    ctx.lineTo(canvasX + 15, canvasYZero);
+                    ctx.stroke();
+                    ctx.restore();
 
-                // Draw Tukey CLD letters if they exist and we are in Publication View
-                if (currentGraphMode === 'pub' && data.tukey_letters) {
-                    const letter = data.tukey_letters[groupName];
+                    ctx.save();
+                    ctx.font = 'bold 11px Arial';
+                    ctx.fillStyle = '#212529';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'bottom';
+                    const labelY = canvasYZero - 4;
+                    ctx.fillText("0.00", canvasX, labelY);
+
                     if (letter) {
+                        ctx.font = 'bold 12px Arial';
+                        ctx.fillText(letter, canvasX, labelY - 14);
+                    }
+                    ctx.restore();
+                } else {
+                    // Standard non-zero mean (or scatter plot) handling
+                    let canvasYMax = y.getPixelForValue(meanVal);
+                    
+                    if (sd > 0) {
+                        const yMin = meanVal - sd;
+                        const yMax = meanVal + sd;
+
+                        const canvasYMin = y.getPixelForValue(yMin);
+                        canvasYMax = y.getPixelForValue(yMax);
+
+                        // Draw vertical error bar line
+                        ctx.beginPath();
+                        ctx.moveTo(canvasX, canvasYMin);
+                        ctx.lineTo(canvasX, canvasYMax);
+                        ctx.stroke();
+
+                        // Draw horizontal caps
+                        const capWidth = 6;
+                        ctx.beginPath();
+                        ctx.moveTo(canvasX - capWidth, canvasYMin);
+                        ctx.lineTo(canvasX + capWidth, canvasYMin);
+                        ctx.moveTo(canvasX - capWidth, canvasYMax);
+                        ctx.lineTo(canvasX + capWidth, canvasYMax);
+                        ctx.stroke();
+                    }
+
+                    // Draw Tukey CLD letters if they exist and we are in Publication View
+                    if (currentGraphMode === 'pub' && letter) {
                         ctx.save();
                         ctx.font = 'bold 12px sans-serif';
                         ctx.fillStyle = '#212529'; // Charcoal
@@ -937,7 +1028,13 @@ function drawOneWayScatterPlot(data) {
                     tooltip: {
                         callbacks: {
                             label: function(context) {
-                                return 'Group Mean: ' + context.raw.toFixed(4) + ' cm';
+                                const groupName = groupNames[context.dataIndex];
+                                const stat = data.summary_stats.find(s => formatGroupName(s.Group) === groupName);
+                                const sdVal = (stat && stat.SD !== undefined) ? stat.SD : 0;
+                                return [
+                                    'Mean: ' + context.raw.toFixed(4) + ' cm',
+                                    'SD: ' + sdVal.toFixed(4) + ' cm'
+                                ];
                             }
                         }
                     }
@@ -1074,7 +1171,13 @@ function drawOneWayScatterPlot(data) {
                         callbacks: {
                             label: function(context) {
                                 if (context.datasetIndex === 1) {
-                                    return 'Group Mean: ' + context.raw.y.toFixed(4) + ' cm';
+                                    const groupName = groupNames[context.dataIndex];
+                                    const stat = data.summary_stats.find(s => formatGroupName(s.Group) === groupName);
+                                    const sdVal = (stat && stat.SD !== undefined) ? stat.SD : 0;
+                                    return [
+                                        'Group Mean: ' + context.raw.y.toFixed(4) + ' cm',
+                                        'SD: ' + sdVal.toFixed(4) + ' cm'
+                                    ];
                                 }
                                 const groupLabel = groupNames[Math.round(context.raw.x)];
                                 return `Group ${groupLabel}: ${context.raw.y.toFixed(4)} cm`;
@@ -1180,6 +1283,7 @@ function handlePostHocDirectionChange(direction) {
         : document.getElementById("posthoc-concentration-select").value;
         
     renderTwoWayPostHocTable(activeKey);
+    drawTwoWaySMEBarPlot(lastTwoWayData);
 }
 
 // Display Two-Way results in the UI
@@ -1480,8 +1584,14 @@ function renderTwoWayResults(data) {
         if (biocharSelect) biocharSelect.value = initialBiochar;
         renderTwoWayPostHocTable(initialBiochar);
         document.getElementById("twoway-posthoc-card").style.display = "block";
+        drawTwoWaySMEBarPlot(data);
     } else {
         document.getElementById("twoway-posthoc-card").style.display = "none";
+        document.getElementById("twoway-sme-chart-card").style.display = "none";
+        if (activeTwoWayBarChart) {
+            activeTwoWayBarChart.destroy();
+            activeTwoWayBarChart = null;
+        }
     }
 
     // 6. Output Debug details
@@ -1587,6 +1697,98 @@ function drawTwoWayInteractionPlot(data) {
         });
     });
 
+    // Helper to find SD for a cell (Biochar Species & Concentration)
+    function getCellSD(biochar, x) {
+        const row = data.cell_means.find(r => r.Biochar === biochar);
+        if (!row) return 0;
+        const key = parseFloat(x).toFixed(1);
+        const cell = row[key] || row[String(x)] || row[x];
+        return (cell && typeof cell.SD === 'number') ? cell.SD : 0;
+    }
+
+    // Calculate padded Y-axis limits using SD values to prevent clipping
+    let yMinVal = Infinity;
+    let yMaxVal = -Infinity;
+    let hasPoints = false;
+    Object.keys(plotData).forEach(biochar => {
+        plotData[biochar].forEach(pt => {
+            const sd = getCellSD(biochar, pt.x);
+            const low = pt.y - sd;
+            const high = pt.y + sd;
+            if (low < yMinVal) yMinVal = low;
+            if (high > yMaxVal) yMaxVal = high;
+            hasPoints = true;
+        });
+    });
+    
+    let interactionYMin = 0;
+    let interactionYMax = 10;
+    if (hasPoints) {
+        const yRange = yMaxVal - yMinVal;
+        const yPad = yRange * 0.1 || 1.0; // 10% padding
+        interactionYMin = Math.max(0, yMinVal - yPad);
+        interactionYMax = yMaxVal + yPad;
+    }
+
+    // Local self-contained interaction error bars plugin
+    const interactionErrorBarsPlugin = {
+        id: 'interactionErrorBars',
+        afterDatasetsDraw(chart) {
+            const { ctx, scales: { x, y } } = chart;
+            ctx.save();
+            ctx.lineWidth = 2.0;
+
+            chart.data.datasets.forEach((dataset, datasetIdx) => {
+                const meta = chart.getDatasetMeta(datasetIdx);
+                if (!meta || meta.hidden || !meta.data) return;
+
+                ctx.strokeStyle = dataset.borderColor; // Use matching line color for error bars
+
+                meta.data.forEach((point, index) => {
+                    const ptData = dataset.data[index];
+                    if (!ptData) return;
+
+                    const activeElements = chart.getActiveElements();
+                    const isHovered = activeElements.some(el => el.datasetIndex === datasetIdx && el.index === index);
+
+                    // Show error bar if showAllErrorBars is set (e.g. for PNG export), OR if the point is hovered
+                    if (!chart.showAllErrorBars && !isHovered) {
+                        return;
+                    }
+
+                    const biochar = dataset.label;
+                    const concVal = ptData.x;
+                    const meanVal = ptData.y;
+                    const sd = getCellSD(biochar, concVal);
+                    if (sd <= 0) return; // Skip if zero-variance / zero SD
+
+                    const yMin = meanVal - sd;
+                    const yMax = meanVal + sd;
+
+                    const canvasX = point.x;
+                    const canvasYMin = y.getPixelForValue(yMin);
+                    const canvasYMax = y.getPixelForValue(yMax);
+
+                    // Draw vertical error bar line
+                    ctx.beginPath();
+                    ctx.moveTo(canvasX, canvasYMin);
+                    ctx.lineTo(canvasX, canvasYMax);
+                    ctx.stroke();
+
+                    // Draw horizontal caps
+                    const capWidth = 6;
+                    ctx.beginPath();
+                    ctx.moveTo(canvasX - capWidth, canvasYMin);
+                    ctx.lineTo(canvasX + capWidth, canvasYMin);
+                    ctx.moveTo(canvasX - capWidth, canvasYMax);
+                    ctx.lineTo(canvasX + capWidth, canvasYMax);
+                    ctx.stroke();
+                });
+            });
+            ctx.restore();
+        }
+    };
+
     activeTwoWayChart = new Chart(ctx, {
         type: 'line',
         data: {
@@ -1599,11 +1801,16 @@ function drawTwoWayInteractionPlot(data) {
                 x: {
                     type: 'linear',
                     position: 'bottom',
+                    afterBuildTicks: function(axis) {
+                        const uniqueConcs = data.debug_details.factor_levels.Concentration;
+                        axis.ticks = uniqueConcs.map(v => ({ value: v }));
+                    },
                     title: {
                         display: true,
                         text: 'Concentration (g/L)',
                         color: '#2d3748',
                         font: {
+                            family: 'Arial',
                             size: 12,
                             weight: 'bold'
                         }
@@ -1617,22 +1824,31 @@ function drawTwoWayInteractionPlot(data) {
                         width: 1.5
                     },
                     ticks: {
-                        stepSize: 0.5,
                         color: '#2d3748',
+                        maxRotation: 45,
                         font: {
+                            family: 'Arial',
                             size: 11
                         },
                         callback: function(value) {
-                            return value === 0 ? "0.0 (Ctrl)" : value.toFixed(1) + " g/L";
+                            const uniqueConcs = data.debug_details.factor_levels.Concentration;
+                            const match = uniqueConcs.find(c => Math.abs(c - value) < 0.0001);
+                            if (match !== undefined) {
+                                return match === 0 ? "0.0 (Ctrl)" : match.toFixed(1) + " g/L";
+                            }
+                            return null;
                         }
                     }
                 },
                 y: {
+                    min: interactionYMin,
+                    max: interactionYMax,
                     title: {
                         display: true,
                         text: 'Mean ' + data.variable + ' (cm)',
                         color: '#2d3748',
                         font: {
+                            family: 'Arial',
                             size: 12,
                             weight: 'bold'
                         }
@@ -1648,6 +1864,7 @@ function drawTwoWayInteractionPlot(data) {
                     ticks: {
                         color: '#2d3748',
                         font: {
+                            family: 'Arial',
                             size: 11
                         }
                     }
@@ -1659,7 +1876,11 @@ function drawTwoWayInteractionPlot(data) {
                     position: 'top',
                     labels: {
                         boxWidth: 12,
+                        usePointStyle: true,
+                        pointStyle: 'circle',
+                        padding: 20,
                         font: {
+                            family: 'Arial',
                             size: 11
                         },
                         color: '#2d3748'
@@ -1668,12 +1889,37 @@ function drawTwoWayInteractionPlot(data) {
                 tooltip: {
                     callbacks: {
                         label: function(context) {
-                            return `${context.dataset.label} (${context.raw.x} g/L): ${context.raw.y.toFixed(4)} cm`;
+                            const biochar = context.dataset.label;
+                            const concVal = context.raw.x;
+                            
+                            const row = data.cell_means.find(r => r.Biochar === biochar);
+                            let sd = 0;
+                            let n = 0;
+                            if (row) {
+                                const key = parseFloat(concVal).toFixed(1);
+                                const cell = row[key] || row[concVal.toString()] || row[concVal];
+                                if (cell) {
+                                    sd = cell.SD || 0;
+                                    n = cell.N || 0;
+                                }
+                            }
+                            
+                            const lines = [
+                                `Biochar Species: ${biochar}`,
+                                `Concentration: ${concVal === 0 ? "0.0 (Ctrl)" : concVal.toFixed(1) + " g/L"}`,
+                                `Mean: ${context.raw.y.toFixed(4)} cm`,
+                                `SD: ${sd.toFixed(4)} cm`
+                            ];
+                            if (n > 0) {
+                                lines.push(`N: ${n}`);
+                            }
+                            return lines;
                         }
                     }
                 }
             }
-        }
+        },
+        plugins: [interactionErrorBarsPlugin]
     });
 }
 
@@ -1694,4 +1940,301 @@ function hideError() {
     if (errorDiv) {
         errorDiv.style.display = "none";
     }
+}
+
+// Draw Post-Hoc Simple Main Effects Bar Chart
+function drawTwoWaySMEBarPlot(data) {
+    if (activeTwoWayBarChart) {
+        activeTwoWayBarChart.destroy();
+    }
+
+    const ctx = document.getElementById("twoway-bar-canvas").getContext("2d");
+    
+    // Retrieve active post-hoc direction and selector
+    const activeRadio = document.querySelector('input[name="twoway-posthoc-direction"]:checked');
+    const direction = activeRadio ? activeRadio.value : 'within_biochar';
+    const isWithinBiochar = (direction === 'within_biochar');
+    
+    const key = isWithinBiochar
+        ? document.getElementById("posthoc-biochar-select").value
+        : document.getElementById("posthoc-concentration-select").value;
+        
+    if (!key) return;
+
+    // Show the card container
+    document.getElementById("twoway-sme-chart-card").style.display = "block";
+    
+    const chartTitleEl = document.getElementById("twoway-sme-chart-title");
+    if (chartTitleEl) {
+        chartTitleEl.textContent = isWithinBiochar 
+            ? `Simple Main Effects: Concentration Comparisons within ${key}` 
+            : `Simple Main Effects: Biochar Species Comparisons within ${key}`;
+    }
+
+    const labels = [];
+    const means = [];
+    const sds = [];
+    const letters = [];
+
+    if (isWithinBiochar) {
+        // key is biochar name
+        const row = data.cell_means.find(r => r.Biochar === key);
+        if (row) {
+            const concs = data.debug_details.factor_levels.Concentration;
+            const letterMap = (data.simple_main_effects && data.simple_main_effects.within_biochar && data.simple_main_effects.within_biochar.letters)
+                ? (data.simple_main_effects.within_biochar.letters[key] || {})
+                : {};
+            concs.forEach(c => {
+                const cellKey = parseFloat(c).toFixed(1);
+                const cell = row[cellKey] || row[c.toString()] || row[c];
+                const label = (c === 0) ? "Control" : `${c} g/L`;
+                labels.push(label);
+                
+                if (cell && cell.N > 0) {
+                    means.push(cell.Mean);
+                    sds.push(cell.SD);
+                } else {
+                    means.push(0.0);
+                    sds.push(0.0);
+                }
+                letters.push(letterMap[label] || "");
+            });
+        }
+    } else {
+        // key is concentration label (e.g. "Control", "0.3 g/L")
+        function getConcNum(keyStr) {
+            if (keyStr === "Control") return 0.0;
+            const parsed = parseFloat(keyStr);
+            return isNaN(parsed) ? 0.0 : parsed;
+        }
+        const c = getConcNum(key);
+        const biochars = data.debug_details.factor_levels.Biochar;
+        const letterMap = (data.simple_main_effects && data.simple_main_effects.within_concentration && data.simple_main_effects.within_concentration.letters)
+            ? (data.simple_main_effects.within_concentration.letters[key] || {})
+            : {};
+        
+        biochars.forEach(b => {
+            const row = data.cell_means.find(r => r.Biochar === b);
+            labels.push(b);
+            if (row) {
+                const cellKey = parseFloat(c).toFixed(1);
+                const cell = row[cellKey] || row[c.toString()] || row[c];
+                if (cell && cell.N > 0) {
+                    means.push(cell.Mean);
+                    sds.push(cell.SD);
+                } else {
+                    means.push(0.0);
+                    sds.push(0.0);
+                }
+            } else {
+                means.push(0.0);
+                sds.push(0.0);
+            }
+            letters.push(letterMap[b] || "");
+        });
+    }
+
+    // Calculate dynamic Y-axis range with padding
+    let maxMeanWithSD = 0;
+    means.forEach((m, idx) => {
+        const val = m + sds[idx];
+        if (val > maxMeanWithSD) {
+            maxMeanWithSD = val;
+        }
+    });
+    const barYMax = maxMeanWithSD * 1.15 || 1.0;
+
+    // Helper to convert hex to rgba
+    function hexToRgba(hex, alpha) {
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    const selectedColor = document.getElementById("twoway-chart-color")?.value || "#4a5568";
+    const bgColor = hexToRgba(selectedColor, 0.8);
+    const borderColor = selectedColor;
+
+    // Local self-contained plugin for error bars, Tukey letters, and zero values
+    const smeErrorBarsPlugin = {
+        id: 'smeErrorBars',
+        afterDatasetsDraw(chart) {
+            const { ctx, scales: { x, y } } = chart;
+            const meta = chart.getDatasetMeta(0);
+            const dataset = chart.data.datasets[0];
+            if (!dataset || !meta || !meta.data) return;
+
+            ctx.save();
+            ctx.lineWidth = 2.0;
+
+            meta.data.forEach((point, index) => {
+                const meanVal = dataset.data[index];
+                const sdVal = sds[index];
+                const letter = letters[index];
+                const canvasX = point.x;
+
+                if (meanVal === 0.0) {
+                    // Flat zero bar
+                    const canvasYZero = y.getPixelForValue(0);
+
+                    ctx.save();
+                    ctx.strokeStyle = dataset.borderColor;
+                    ctx.lineWidth = 3.0;
+                    ctx.beginPath();
+                    ctx.moveTo(canvasX - 15, canvasYZero);
+                    ctx.lineTo(canvasX + 15, canvasYZero);
+                    ctx.stroke();
+                    ctx.restore();
+
+                    ctx.save();
+                    ctx.font = 'bold 11px Arial';
+                    ctx.fillStyle = '#212529';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'bottom';
+                    const labelY = canvasYZero - 4;
+                    ctx.fillText("0.00", canvasX, labelY);
+
+                    if (letter) {
+                        ctx.font = 'bold 12px Arial';
+                        ctx.fillText(letter, canvasX, labelY - 14);
+                    }
+                    ctx.restore();
+                } else {
+                    const canvasYMean = y.getPixelForValue(meanVal);
+                    let canvasYMax = canvasYMean;
+
+                    if (sdVal > 0) {
+                        const yMin = meanVal - sdVal;
+                        const yMax = meanVal + sdVal;
+                        const canvasYMin = y.getPixelForValue(yMin);
+                        canvasYMax = y.getPixelForValue(yMax);
+
+                        ctx.strokeStyle = '#212529';
+                        ctx.beginPath();
+                        ctx.moveTo(canvasX, canvasYMin);
+                        ctx.lineTo(canvasX, canvasYMax);
+                        ctx.stroke();
+
+                        const capWidth = 6;
+                        ctx.beginPath();
+                        ctx.moveTo(canvasX - capWidth, canvasYMin);
+                        ctx.lineTo(canvasX + capWidth, canvasYMin);
+                        ctx.moveTo(canvasX - capWidth, canvasYMax);
+                        ctx.lineTo(canvasX + capWidth, canvasYMax);
+                        ctx.stroke();
+                    }
+
+                    if (letter) {
+                        ctx.save();
+                        ctx.font = 'bold 12px Arial';
+                        ctx.fillStyle = '#212529';
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'bottom';
+                        ctx.fillText(letter, canvasX, canvasYMax - 8);
+                        ctx.restore();
+                    }
+                }
+            });
+            ctx.restore();
+        }
+    };
+
+    activeTwoWayBarChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Mean',
+                    data: means,
+                    backgroundColor: bgColor,
+                    borderColor: borderColor,
+                    borderWidth: 1.5,
+                    barPercentage: 0.5
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    title: {
+                        display: true,
+                        text: isWithinBiochar ? "Biochar Concentration (g/L)" : "Biochar Species",
+                        color: '#2d3748',
+                        font: {
+                            family: 'Arial',
+                            size: 12,
+                            weight: 'bold'
+                        }
+                    },
+                    grid: {
+                        display: false
+                    },
+                    border: {
+                        display: true,
+                        color: '#2d3748',
+                        width: 1.5
+                    },
+                    ticks: {
+                        color: '#2d3748',
+                        font: {
+                            family: 'Arial',
+                            size: 11
+                        }
+                    }
+                },
+                y: {
+                    title: {
+                        display: true,
+                        text: data.variable + ' (cm)',
+                        color: '#2d3748',
+                        font: {
+                            family: 'Arial',
+                            size: 12,
+                            weight: 'bold'
+                        }
+                    },
+                    beginAtZero: true,
+                    max: barYMax,
+                    grid: {
+                        color: '#f1f5f9',
+                        drawTicks: true
+                    },
+                    border: {
+                        display: true,
+                        color: '#2d3748',
+                        width: 1.5
+                    },
+                    ticks: {
+                        color: '#2d3748',
+                        font: {
+                            family: 'Arial',
+                            size: 11
+                        }
+                    }
+                }
+            },
+            plugins: {
+                legend: {
+                    display: false
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const meanVal = context.raw;
+                            const sdVal = sds[context.dataIndex];
+                            return [
+                                'Mean: ' + meanVal.toFixed(4) + ' cm',
+                                'SD: ' + sdVal.toFixed(4) + ' cm'
+                            ];
+                        }
+                    }
+                }
+            }
+        },
+        plugins: [smeErrorBarsPlugin]
+    });
 }
